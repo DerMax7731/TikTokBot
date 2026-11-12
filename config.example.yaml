@@ -1,0 +1,46 @@
+# Copy to config.yaml and edit. Secrets can also come from the environment:
+# TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET.
+
+tiktok:
+  client_key: ""
+  client_secret: ""
+  redirect_uri: "https://example.com/callback"   # must match your TikTok developer app
+  # PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY
+  # Unaudited TikTok apps may only post SELF_ONLY (private).
+  privacy_level: "SELF_ONLY"
+
+schedule:
+  timezone: "Europe/Berlin"
+  post_times: ["09:00", "15:00", "20:00"]   # 3 posts a day
+  grace_minutes: 180                        # a missed slot is still posted this long after
+
+clips:
+  length_seconds: 35
+  per_source: 3            # best N highlights taken from each video
+  min_gap_seconds: 20      # minimum distance between two highlights
+  vertical: true           # reformat to 1080x1920 with blurred background
+  queue_target: 6          # harvest new sources when fewer clips than this are queued
+
+# Only add content you own or are allowed to re-use (your own channels,
+# creators with a clipping policy, licensed material).
+sources:
+  # A channel/playlist/profile: the newest unseen videos are taken.
+  - url: "https://www.youtube.com/@YourChannel/videos"
+    latest: 2
+    hashtags: ["fyp", "clips"]
+  # A single video.
+  # - url: "https://www.youtube.com/watch?v=XXXXXXXXXXX"
+  # A live stream (Twitch, YouTube Live, Kick ...): records this many seconds when live.
+  # - url: "https://www.twitch.tv/yourchannel"
+  #   record_seconds: 1200
+  # A TikTok profile or video.
+  # - url: "https://www.tiktok.com/@youraccount"
+  #   latest: 3
+
+caption:
+  template: "{title} {hashtags}"
+  credit: true             # appends "(via <uploader>)"
+  max_length: 2200
+
+paths:
+  data_dir: "data"
