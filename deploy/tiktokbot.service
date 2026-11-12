@@ -1,0 +1,18 @@
+# Copy to /etc/systemd/system/, adjust the paths and user, then:
+#   systemctl enable --now tiktokbot
+[Unit]
+Description=TikTokBot scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tiktokbot
+WorkingDirectory=/opt/tiktokbot
+# Optional file with ANTHROPIC_API_KEY=..., TIKTOK_CLIENT_KEY=..., TIKTOK_CLIENT_SECRET=...
+EnvironmentFile=-/opt/tiktokbot/.env
+ExecStart=/opt/tiktokbot/venv/bin/tiktokbot run
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

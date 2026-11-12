@@ -18,8 +18,35 @@ clips:
   length_seconds: 35
   per_source: 3            # best N highlights taken from each video
   min_gap_seconds: 20      # minimum distance between two highlights
-  vertical: true           # reformat to 1080x1920 with blurred background
-  queue_target: 6          # harvest new sources when fewer clips than this are queued
+  layout: blur             # blur (whole frame on blurred background) | crop (fill screen) | fit (black bars)
+  subtitles: true          # burn in word-by-word captions when a transcript is available
+  hook_overlay: true       # show the AI-written headline for the first seconds
+  normalize_audio: true    # even out loudness
+  candidates_factor: 3     # with AI on, offer it 3x as many moments as needed to choose from
+  long_video_minutes: 20   # above this, only the chosen stretches of video are downloaded
+  queue_target: 6          # harvest new sources when fewer clips than this are waiting
+
+# Optional: Claude reads the transcripts, picks the strongest moments and writes
+# hook, caption and hashtags. Needs `pip install "tiktokbot[ai]"` and ANTHROPIC_API_KEY.
+ai:
+  enabled: true
+  model: "claude-opus-5-5"
+  language: ""             # caption language; empty = language spoken in the clip
+
+# Transcripts come from YouTube captions. For Twitch/TikTok/live sources install
+# `pip install "tiktokbot[subtitles]"` to transcribe locally with Whisper.
+whisper:
+  model: "small"
+
+review:
+  require_approval: false  # true: clips wait for `tiktokbot approve` before they can be posted
+
+posting:
+  max_attempts: 3          # failed uploads are retried, then the clip is dropped
+  retry_minutes: 10
+
+notify:
+  webhook_url: ""          # Discord or Slack webhook: posted / failed / nothing to post
 
 # Only add content you own or are allowed to re-use (your own channels,
 # creators with a clipping policy, licensed material).

@@ -23,6 +23,10 @@ class TikTokError(RuntimeError):
     pass
 
 
+class TikTokAuthError(TikTokError):
+    """The account is not connected (or the connection expired): retrying will not help."""
+
+
 def plan_chunks(size: int, chunk: int = CHUNK) -> tuple[int, int]:
     """(chunk_size, total_chunk_count) following TikTok's rules: files below
     5 MB go up whole; otherwise the last chunk absorbs the remainder."""
@@ -75,11 +79,14 @@ class TikTokClient:
 
     def access_token(self) -> str:
         if not self.token_path.exists():
-            raise TikTokError("not authorized yet - run `tiktokbot auth` first")
+            raise TikTokAuthError("not authorized yet - run `tiktokbot auth` first")
         tok = json.loads(self.token_path.read_text())
         if tok.get("expires_at", 0) - 300 < time.time():
             log.info("refreshing TikTok access token")
-            tok = self._token_request({"grant_type": "refresh_token", "refresh_token": tok["refresh_token"]})
+            try:
+                tok = self._token_request({"grant_type": "refresh_token", "refresh_token": tok["refresh_token"]})
+            except TikTokError as exc:
+                raise TikTokAuthError(f"{exc} - run `tiktokbot auth` again") from None
         return tok["access_token"]
 
     # ---- Posting ---------------------------------------------------------
@@ -98,6 +105,8 @@ class TikTokClient:
         except ValueError:
             raise TikTokError(f"{endpoint}: HTTP {resp.status_code}") from None
         err = payload.get("error") or {}
+        if err.get("code") in ("access_token_invalid", "scope_not_authorized"):
+            raise TikTokAuthError(f"{err.get('code')} - run `tiktokbot auth` again")
         if err.get("code", "ok") != "ok":
             raise TikTokError(f"{endpoint}: {err.get('code')} - {err.get('message')}")
         return payload.get("data") or {}

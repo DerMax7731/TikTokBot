@@ -24,9 +24,20 @@ DEFAULTS = {
         "length_seconds": 35,
         "per_source": 3,
         "min_gap_seconds": 20,
-        "vertical": True,
+        "layout": "blur",
+        "subtitles": True,
+        "hook_overlay": True,
+        "normalize_audio": True,
+        "candidates_factor": 3,
+        "long_video_minutes": 20,
+        "font": "DejaVu Sans",
         "queue_target": 6,
     },
+    "ai": {"enabled": True, "model": "claude-opus-5-5", "language": ""},
+    "whisper": {"model": "small"},
+    "review": {"require_approval": False},
+    "posting": {"max_attempts": 3, "retry_minutes": 10},
+    "notify": {"webhook_url": ""},
     "sources": [],
     "caption": {"template": "{title} {hashtags}", "credit": True, "max_length": 2200},
     "paths": {"data_dir": "data"},
@@ -64,6 +75,11 @@ def load_config(path: str | Path = "config.yaml") -> dict:
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(t)):
             raise ConfigError(f"invalid post time {t!r}, expected HH:MM")
     cfg["schedule"]["post_times"] = sorted(set(map(str, times)))
+
+    if "vertical" in cfg["clips"]:  # pre-layout configs
+        cfg["clips"]["layout"] = "blur" if cfg["clips"].pop("vertical") else "fit"
+    if cfg["clips"]["layout"] not in ("blur", "crop", "fit"):
+        raise ConfigError("clips.layout must be blur, crop or fit")
 
     sources = []
     for src in cfg["sources"] or []:
