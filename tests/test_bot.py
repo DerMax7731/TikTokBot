@@ -330,3 +330,144 @@ def test_upload_flow(tmp_path, monkeypatch):
     assert init["post_info"]["privacy_level"] == "SELF_ONLY"  # fell back to an allowed level
     assert init["source_info"] == {"source": "FILE_UPLOAD", "video_size": 1000, "chunk_size": 1000, "total_chunk_count": 1}
     assert puts[0]["Content-Range"] == "bytes 0-999/1000"
+
+
+# ---- sentence-aware cuts -------------------------------------------------
+def test_refine_bounds_moves_to_sentence_edges():
+    #  "...end of thought." | pause | "new idea starts here and goes on. | next one"
+    words = [Word(8.0, 8.4, "before"), Word(8.5, 9.0, "thought."), Word(10.2, 10.6, "new"), Word(10.6, 11.0, "idea"),
+             Word(11.0, 20.0, "continues"), Word(20.0, 20.5, "on."), Word(21.5, 22.0, "next"), Word(22.0, 30.0, "one")]
+    start, end = transcript.refine_bounds(words, 9.0, 19.0)
+    assert round(start, 2) == 10.05 and round(end, 2) == 20.75   # opens on "new", closes after "on."
+    assert transcript.refine_bounds([], 5.0, 20.0) == (5.0, 20.0)
+    assert transcript.refine_bounds(words[:2], 5.0, 20.0) == (5.0, 20.0)   # no boundary nearby: unchanged
+
+
+def test_harvest_uses_sentence_bounds(video, tmp_path, monkeypatch):
+    words = [Word(18.0, 19.0, "lead"), Word(19.0, 19.6, "in."), Word(21.4, 22.0, "boom"),
+             Word(22.0, 26.0, "happens"), Word(26.0, 27.2, "here."), Word(29.0, 30.0, "after")]
+    fake_source(monkeypatch, video, words=words)
+    spans = []
+    real = clipper.render_clip
+    monkeypatch.setattr(clipper, "render_clip", lambda seg, out, offset, length, *a, **k: spans.append((offset, length)) or real(seg, out, offset, length, *a, **k))
+    bot = Bot(load_config(write_cfg(tmp_path, clips={"per_source": 1, "length_seconds": 6})))
+    assert bot.harvest() == 1
+    offset, length = spans[0]
+    assert round(offset, 2) == 21.25 and round(offset + length, 2) == 27.45   # "boom happens here."
+
+
+# ---- face-centred crop ---------------------------------------------------
+def test_focus_crop_follows_position(tmp_path):
+    from tiktokbot import vision
+    src = tmp_path / "halves.mp4"   # left half red, right half blue
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=red:size=640x360:rate=10:duration=3",
+                    "-f", "lavfi", "-i", "color=blue:size=640x360:rate=10:duration=3", "-filter_complex", "[0][1]hstack",
+                    "-c:v", "libx264", "-preset", "ultrafast", str(src)], check=True)
+
+    def mean_rgb(path):
+        raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", "1", "-i", str(path), "-frames:v", "1",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+        return np.frombuffer(raw, np.uint8).reshape(-1, 3).mean(axis=0)
+
+    left = mean_rgb(clipper.render_clip(src, tmp_path / "l.mp4", 0, 2, focus_x=0.2))
+    right = mean_rgb(clipper.render_clip(src, tmp_path / "r.mp4", 0, 2, focus_x=0.8))
+    assert left[0] > 200 and left[2] < 40 and right[2] > 200 and right[0] < 40
+    assert probe(tmp_path / "l.mp4", "stream=width,height") == "1080,1920"
+    assert vision.face_center_x(src, 0, 2) is None            # real detector, no face in the picture
+
+
+def test_smart_layout_uses_face_position(video, tmp_path, monkeypatch):
+    from tiktokbot import vision
+    fake_source(monkeypatch, video)
+    monkeypatch.setattr(vision, "face_center_x", lambda path, start, length: 0.7)
+    seen = []
+    real = clipper.render_clip
+    monkeypatch.setattr(clipper, "render_clip", lambda *a, **k: seen.append(a) or real(*a, **k))
+    bot = Bot(load_config(write_cfg(tmp_path, clips={"per_source": 1, "layout": "smart"})))
+    assert bot.harvest() == 1 and seen[0][-1] == 0.7
+
+
+# ---- draft mode and statistics -------------------------------------------
+def test_draft_mode_uploads_to_inbox(tmp_path, monkeypatch):
+    client = TikTokClient({"client_key": "k", "client_secret": "s", "redirect_uri": "https://x/cb", "mode": "draft",
+                           "stats": True}, tmp_path / "tok.json")
+    assert "scope=user.info.basic%2Cvideo.upload%2Cvideo.list" in client.authorize_url()
+    monkeypatch.setattr(client, "access_token", lambda: "tok")
+    calls = []
+
+    def fake_post(endpoint, body=None, params=None):
+        calls.append((endpoint, body))
+        return {"publish_id": "p1", "upload_url": "https://upload"} if "init" in endpoint else {"status": "SEND_TO_USER_INBOX"}
+
+    class Resp:
+        status_code = 201
+
+    monkeypatch.setattr(client, "_post", fake_post)
+    monkeypatch.setattr(client.session, "put", lambda url, data, headers, timeout: Resp())
+    f = tmp_path / "v.mp4"
+    f.write_bytes(b"x" * 10)
+    assert client.upload_video(f, "cap") == "p1"
+    assert calls[0][0] == "/post/publish/inbox/video/init/" and "post_info" not in calls[0][1]
+    assert len(calls) == 2   # no creator_info query, finished once the draft reached the inbox
+
+
+def test_stats_sync_and_source_ranking(tmp_path, monkeypatch):
+    cfg = load_config(write_cfg(tmp_path, sources=[{"url": "https://a"}, {"url": "https://b"}, {"url": "https://c"}]))
+    bot = Bot(cfg)
+    ids = [bot.db.add_clip(f"{u}.mp4", "cap", f"S:{u}", source_url=f"https://{u}") for u in "ab"]
+    for i in ids:
+        bot.db.mark_posted(i, f"pub{i}")
+    monkeypatch.setattr(TikTokClient, "video_id", lambda self, publish_id: "v" + publish_id)
+    monkeypatch.setattr(TikTokClient, "video_stats", lambda self, vids: {
+        f"vpub{ids[0]}": {"view_count": 100, "like_count": 5}, f"vpub{ids[1]}": {"view_count": 9000, "like_count": 700}})
+    assert bot.sync_stats() == 2
+    assert bot.db.get(ids[1])["views"] == 9000 and bot.db.get(ids[1])["likes"] == 700
+    # best performer first, the untested source in the middle, the weak one last
+    assert [s["url"] for s in bot.ranked_sources()] == ["https://b", "https://c", "https://a"]
+
+
+# ---- dashboard -----------------------------------------------------------
+@pytest.fixture
+def dashboard(video, tmp_path, monkeypatch):
+    import threading
+    from tiktokbot import web
+    cfg = load_config(write_cfg(tmp_path, review={"require_approval": True}, web={"token": "s3cret"}))
+    fake_source(monkeypatch, video)
+    bot = Bot(cfg)
+    bot.harvest()
+    server = web.make_server(cfg, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield bot, f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+
+
+def test_dashboard_api(dashboard):
+    import requests
+    bot, base = dashboard
+    assert requests.get(base + "/api/state").status_code == 401
+    s = requests.Session()
+    page = s.get(base + "/?token=s3cret")
+    assert page.status_code == 200 and "TikTokBot" in page.text and s.cookies.get("tt_token")
+    state = s.get(base + "/api/state").json()
+    a, b = [c["id"] for c in state["clips"]]
+    assert all(c["status"] == "pending" and c["has_file"] for c in state["clips"]) and len(state["next_posts"]) == 3
+
+    part = s.get(f"{base}/media/{a}", headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and len(part.content) == 100 and part.headers["Content-Range"].startswith("bytes 0-99/")
+    assert s.get(f"{base}/media/{a}").content[4:8] == b"ftyp"
+    assert s.get(f"{base}/media/999").status_code == 404
+
+    assert s.post(f"{base}/api/clips/{a}/approve", data="{}").status_code == 400                       # not JSON
+    assert s.post(f"{base}/api/clips/{a}/approve", json={}, headers={"Origin": "https://evil.example"}).status_code == 400
+    assert s.post(f"{base}/api/clips/{a}/caption", json={"text": "  New   caption "}).status_code == 200
+    assert s.post(f"{base}/api/clips/{a}/approve", json={}).status_code == 200
+    assert s.post(f"{base}/api/clips/{a}/approve", json={}).status_code == 409                         # already approved
+    assert s.post(f"{base}/api/clips/{b}/reject", json={}).status_code == 200
+    assert bot.db.get(a)["status"] == "queued" and bot.db.get(a)["caption"] == "New caption"
+    assert bot.db.get(b)["status"] == "rejected" and not __import__("pathlib").Path(bot.db.get(b)["path"]).exists()
+
+
+def test_dashboard_refuses_public_bind_without_token(tmp_path):
+    from tiktokbot import web
+    with pytest.raises(ValueError):
+        web.make_server(load_config(write_cfg(tmp_path)), "0.0.0.0", 0)

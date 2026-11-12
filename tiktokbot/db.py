@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS slots (
     handled_at REAL
 );
 """
-MIGRATIONS = {"hook": "TEXT", "score": "REAL DEFAULT 0", "attempts": "INTEGER DEFAULT 0", "retry_at": "REAL DEFAULT 0"}
+MIGRATIONS = {"source_url": "TEXT", "video_id": "TEXT", "views": "INTEGER", "likes": "INTEGER", "comments": "INTEGER",
+              "shares": "INTEGER", "stats_at": "REAL", "hook": "TEXT", "score": "REAL DEFAULT 0", "attempts": "INTEGER DEFAULT 0", "retry_at": "REAL DEFAULT 0"}
 
 
 class DB:
@@ -51,11 +52,12 @@ class DB:
             self.conn.execute("INSERT OR IGNORE INTO seen VALUES (?,?,?)", (source_id, url, time.time()))
 
     def add_clip(self, path: str, caption: str, source_id: str, hook: str | None = None,
-                 score: float = 0.0, status: str = "queued") -> int:
+                 score: float = 0.0, status: str = "queued", source_url: str | None = None) -> int:
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO clips (path, caption, source_id, hook, score, status, created_at) VALUES (?,?,?,?,?,?,?)",
-                (path, caption, source_id, hook, score, status, time.time()),
+                "INSERT INTO clips (path, caption, source_id, hook, score, status, source_url, created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (path, caption, source_id, hook, score, status, source_url, time.time()),
             )
         return cur.lastrowid
 
@@ -119,3 +121,22 @@ class DB:
         if status:
             return self.conn.execute("SELECT * FROM clips WHERE status=? ORDER BY id", (status,)).fetchall()
         return self.conn.execute("SELECT * FROM clips ORDER BY id").fetchall()
+
+    def set_video_id(self, clip_id: int, video_id: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE clips SET video_id=? WHERE id=?", (video_id, clip_id))
+
+    def set_stats(self, clip_id: int, views: int, likes: int, comments: int, shares: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE clips SET views=?, likes=?, comments=?, shares=?, stats_at=? WHERE id=?",
+                (views, likes, comments, shares, time.time(), clip_id),
+            )
+
+    def source_performance(self) -> dict[str, float]:
+        """Average views per posted clip for each configured source url."""
+        rows = self.conn.execute(
+            "SELECT source_url, AVG(views) AS v FROM clips WHERE views IS NOT NULL AND source_url IS NOT NULL"
+            " GROUP BY source_url"
+        ).fetchall()
+        return {r["source_url"]: float(r["v"]) for r in rows}

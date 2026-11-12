@@ -8,6 +8,10 @@ tiktok:
   # PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | FOLLOWER_OF_CREATOR | SELF_ONLY
   # Unaudited TikTok apps may only post SELF_ONLY (private).
   privacy_level: "SELF_ONLY"
+  # direct: the bot publishes the post itself.
+  # draft:  the clip is sent to your TikTok inbox and you publish it in the app
+  #         (works publicly with an unaudited app; needs the app's "Upload to inbox" permission).
+  mode: "direct"
 
 schedule:
   timezone: "Europe/Berlin"
@@ -19,6 +23,8 @@ clips:
   per_source: 3            # best N highlights taken from each video
   min_gap_seconds: 20      # minimum distance between two highlights
   layout: blur             # blur (whole frame on blurred background) | crop (fill screen) | fit (black bars)
+                           # smart: fill the screen centred on the speaker's face, blur when no face is found
+                           #        (needs `pip install "tiktokbot[vision]"`)
   subtitles: true          # burn in word-by-word captions when a transcript is available
   hook_overlay: true       # show the AI-written headline for the first seconds
   normalize_audio: true    # even out loudness
@@ -47,6 +53,17 @@ posting:
 
 notify:
   webhook_url: ""          # Discord or Slack webhook: posted / failed / nothing to post
+
+# Track views and likes of posted clips; sources whose clips do best are harvested first.
+# Needs the video.list permission on your TikTok app; run `tiktokbot auth` again after enabling.
+stats:
+  enabled: false
+
+# Dashboard (`tiktokbot web` or `tiktokbot run --web`).
+web:
+  host: "127.0.0.1"        # only this machine; to open it to your network use 0.0.0.0 and set a token
+  port: 8080
+  token: ""                # then open http://<host>:8080/?token=<token>
 
 # Only add content you own or are allowed to re-use (your own channels,
 # creators with a clipping policy, licensed material).

@@ -19,14 +19,23 @@ LAYOUTS = {
 }
 
 
+def focus_crop(center_x: float) -> str:
+    """Fill the screen, keeping the horizontal position `center_x` (0..1 of the frame width) in view."""
+    return (
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"crop=1080:1920:'min(max(iw*{center_x:.4f}-540,0),iw-1080)':0"
+    )
+
+
 def render_clip(src: str | Path, dst: str | Path, start: float, length: float, layout: str = "blur",
-                ass: str | Path | None = None, normalize_audio: bool = True) -> Path:
+                ass: str | Path | None = None, normalize_audio: bool = True, focus_x: float | None = None) -> Path:
+    """`focus_x` (0..1) turns any layout into a crop centred on that horizontal position."""
     if layout not in LAYOUTS:
         raise ValueError(f"unknown layout {layout!r}, expected one of {sorted(LAYOUTS)}")
     dst = Path(dst).resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     fade_out = max(length - 0.35, 0)
-    graph = LAYOUTS[layout] + ",setsar=1,fps=30"
+    graph = (focus_crop(focus_x) if focus_x is not None else LAYOUTS[layout]) + ",setsar=1,fps=30"
     if ass:
         # Referenced by bare file name (ffmpeg runs in its directory) to avoid filter escaping issues.
         graph += f",ass={Path(ass).name}"

@@ -6,8 +6,9 @@ import logging
 import shutil
 import sys
 
-from . import ai, transcript
+from . import ai, transcript, vision
 from .config import ConfigError, load_config
+from . import web
 from .pipeline import Bot
 from .tiktok_api import TikTokError
 
@@ -25,6 +26,7 @@ def _doctor(bot: Bot) -> int:
         ("AI clip picking and captions", ai.available(cfg["ai"]),
          "pip install 'tiktokbot[ai]' and set ANTHROPIC_API_KEY"),
         ("Whisper subtitles for non-YouTube sources", transcript.whisper_available(), "pip install 'tiktokbot[subtitles]'"),
+        ("face-aware cropping (layout: smart)", vision.available(), "pip install 'tiktokbot[vision]'"),
         ("notifications", bool(cfg["notify"]["webhook_url"]), "set notify.webhook_url"),
     ]
     ok = True
@@ -64,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run", help="run the scheduler (posts at the configured times)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--once", action="store_true", help="handle due slots and exit (for cron)")
+    p.add_argument("--web", action="store_true", help="also serve the dashboard")
+    p = sub.add_parser("web", help="open the dashboard to review clips in the browser")
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
+    sub.add_parser("stats", help="fetch and show how posted clips performed")
     sub.add_parser("status", help="show the queue, recent posts and next post times")
     sub.add_parser("review", help="list clips waiting for approval")
     p = sub.add_parser("approve", help="approve clips for posting")
@@ -99,7 +106,24 @@ def main(argv: list[str] | None = None) -> int:
             if args.once:
                 bot.tick(dry_run=args.dry_run)
             else:
+                if args.web:
+                    web.serve_in_background(bot.cfg)
                 bot.run_forever(dry_run=args.dry_run)
+        elif args.cmd == "web":
+            server = web.make_server(bot.cfg, args.host, args.port)
+            print("dashboard on http://%s:%s (Ctrl+C to stop)" % server.server_address[:2])
+            server.serve_forever()
+        elif args.cmd == "stats":
+            if not bot.cfg["stats"]["enabled"]:
+                print("error: set stats.enabled: true and run `tiktokbot auth` again (adds the video.list permission)",
+                      file=sys.stderr)
+                return 2
+            print(f"updated {bot.sync_stats()} clip(s)")
+            rows = [r for r in bot.db.clips("posted") if r["views"] is not None]
+            for r in sorted(rows, key=lambda r: -r["views"])[:10]:
+                print(f"  {r['views']:>8} views  {r['likes']:>6} likes  #{r['id']} {r['caption'][:60]}")
+            for url, avg in sorted(bot.db.source_performance().items(), key=lambda kv: -kv[1]):
+                print(f"  avg {avg:>8.0f} views/clip  {url}")
         elif args.cmd == "status":
             _status(bot)
         elif args.cmd == "review":
@@ -129,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"caption of #{args.id} updated")
         elif args.cmd == "doctor":
             return _doctor(bot)
-    except (ConfigError, TikTokError) as exc:
+    except (ConfigError, TikTokError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

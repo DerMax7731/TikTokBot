@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import ai, clipper, highlights, notify, sources, transcript
+from . import ai, clipper, highlights, notify, sources, transcript, vision
 from .db import DB
 from .tiktok_api import TikTokAuthError, TikTokClient
 
@@ -50,7 +50,7 @@ class Bot:
         """Turn unseen source videos into clips. Returns clips created."""
         ccfg = self.cfg["clips"]
         created = 0
-        for src in self.cfg["sources"]:
+        for src in self.ranked_sources():
             if not force and self.db.count("queued", "pending") >= ccfg["queue_target"]:
                 break
             try:
@@ -70,15 +70,35 @@ class Bot:
                  created, self.db.count("queued"), self.db.count("pending"))
         return created
 
-    def _words(self, media, start: float, length: float) -> list:
+    def ranked_sources(self) -> list[dict]:
+        """Configured sources, those whose clips earned the most views first.
+        Sources without data yet rank as average, so new ones still get their turn."""
+        perf = self.db.source_performance()
+        if not perf:
+            return list(self.cfg["sources"])
+        mean = sum(perf.values()) / len(perf)
+        return sorted(self.cfg["sources"], key=lambda s: -perf.get(s["url"], mean))
+
+    def _words(self, media, a: float, b: float) -> list:
+        """Words spoken between a and b, timed in source seconds."""
         if media.words:
-            return transcript.slice_words(media.words, start, length)
+            return [w for w in media.words if a <= w.start < b]
         if transcript.whisper_available():
             try:
-                return transcript.transcribe(media.analysis_path, start, length, self.cfg["whisper"]["model"])
+                rel = transcript.transcribe(media.analysis_path, a, b - a, self.cfg["whisper"]["model"])
+                return [transcript.Word(w.start + a, w.end + a, w.text) for w in rel]
             except Exception as exc:
                 log.warning("transcription failed: %s", exc)
         return []
+
+    def _focus(self, seg, offset: float, length: float) -> float | None:
+        if not vision.available():
+            return None
+        try:
+            return vision.face_center_x(seg, offset, length)
+        except Exception as exc:
+            log.warning("face detection failed: %s", exc)
+            return None
 
     def _process(self, entry: dict, src: dict) -> int:
         ccfg = self.cfg["clips"]
@@ -97,9 +117,16 @@ class Bot:
 
             cands = []
             for i, (start, sc) in enumerate(highlights.pick_windows(score, duration, length, pool, int(ccfg["min_gap_seconds"]))):
-                start = min(highlights.snap_to_quiet(energy, start), max(duration - length, 0.0))
-                clip_len = min(float(length), duration - start)
-                words = self._words(media, start, clip_len) if need_words else []
+                end = start + length
+                around = self._words(media, max(start - 3, 0), min(end + 8, duration)) if need_words else []
+                if around:
+                    start, end = transcript.refine_bounds(around, start, end)
+                else:
+                    start = highlights.snap_to_quiet(energy, start)
+                    end = start + length
+                start = max(min(start, duration - 1), 0.0)
+                clip_len = min(end, duration) - start
+                words = transcript.slice_words(around, start, clip_len)
                 cands.append({"index": i, "start": start, "length": clip_len, "score": sc,
                               "words": words, "transcript": transcript.text(words)})
 
@@ -118,8 +145,11 @@ class Bot:
                 if subs or hook:
                     ass = transcript.build_ass(subs, out.with_suffix(".ass"), hook, cand["length"], ccfg["font"])
                 seg, offset = media.segment(cand["start"], cand["length"])
+                smart = ccfg["layout"] == "smart"
+                focus = self._focus(seg, offset, cand["length"]) if smart else None
                 try:
-                    clipper.render_clip(seg, out, offset, cand["length"], ccfg["layout"], ass, ccfg["normalize_audio"])
+                    clipper.render_clip(seg, out, offset, cand["length"], "blur" if smart else ccfg["layout"],
+                                        ass, ccfg["normalize_audio"], focus)
                 finally:
                     if ass:
                         ass.unlink(missing_ok=True)
@@ -127,7 +157,7 @@ class Bot:
                     self.cfg, media.title, media.uploader, src.get("hashtags", []), n, len(chosen),
                     pick["caption"] if pick else None, pick["hashtags"] if pick else None,
                 )
-                self.db.add_clip(str(out), caption, media.source_id, hook, cand["score"], status)
+                self.db.add_clip(str(out), caption, media.source_id, hook, cand["score"], status, src["url"])
                 log.info("%s clip %s (start %.0fs%s)", status, out.name, cand["start"], ", AI-picked" if pick else "")
             return len(chosen)
         finally:
@@ -169,7 +199,10 @@ class Bot:
             self.db.mark_posted(clip["id"], publish_id)
             Path(clip["path"]).unlink(missing_ok=True)
             log.info("posted clip %s (publish_id %s)", clip["id"], publish_id)
-            notify.send(self.cfg["notify"], f"Posted clip #{clip['id']}: {clip['caption'][:120]}")
+            if self.tiktok.mode == "draft":
+                notify.send(self.cfg["notify"], f"Clip #{clip['id']} is in your TikTok inbox. Caption: {clip['caption']}")
+            else:
+                notify.send(self.cfg["notify"], f"Posted clip #{clip['id']}: {clip['caption'][:120]}")
             return clip["id"], True
 
         if self.db.queued_count():  # clips exist but are waiting for their retry time
@@ -211,6 +244,25 @@ class Bot:
             posted += clip_id is not None
         return posted
 
+    # ---- Statistics ------------------------------------------------------
+    def sync_stats(self, max_age_days: float = 30) -> int:
+        """Fetch view/like counts for recent posts. Returns clips updated."""
+        cutoff = time.time() - max_age_days * 86400
+        recent = [c for c in self.db.clips("posted") if (c["posted_at"] or 0) >= cutoff and c["publish_id"]]
+        for clip in recent:
+            if not clip["video_id"]:
+                try:
+                    if video_id := self.tiktok.video_id(clip["publish_id"]):
+                        self.db.set_video_id(clip["id"], video_id)
+                except Exception as exc:
+                    log.debug("no video id for clip %s: %s", clip["id"], exc)
+        by_video = {c["video_id"]: c["id"] for c in self.db.clips("posted") if c["video_id"] and (c["posted_at"] or 0) >= cutoff}
+        stats = self.tiktok.video_stats(list(by_video)) if by_video else {}
+        for video_id, st in stats.items():
+            self.db.set_stats(by_video[video_id], st.get("view_count", 0), st.get("like_count", 0),
+                              st.get("comment_count", 0), st.get("share_count", 0))
+        return len(stats)
+
     def cleanup(self, max_age_hours: float = 12) -> None:
         """Remove leftovers of interrupted downloads."""
         cutoff = time.time() - max_age_hours * 3600
@@ -221,9 +273,15 @@ class Bot:
     def run_forever(self, dry_run: bool = False) -> None:
         log.info("scheduler running - posting daily at %s (%s)",
                  ", ".join(self.cfg["schedule"]["post_times"]), self.cfg["schedule"]["timezone"])
-        last_harvest = 0.0
+        last_harvest = last_stats = 0.0
         while True:
             try:
+                if self.cfg["stats"]["enabled"] and time.time() - last_stats > 6 * 3600:
+                    last_stats = time.time()
+                    try:
+                        log.info("statistics updated for %d clip(s)", self.sync_stats())
+                    except Exception as exc:
+                        log.warning("statistics update failed: %s", exc)
                 # Keep the queue stocked ahead of time so posts go out on the minute.
                 if (self.db.count("queued", "pending") < self.cfg["clips"]["queue_target"]
                         and time.time() - last_harvest > 3600):

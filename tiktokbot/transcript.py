@@ -81,6 +81,22 @@ def slice_words(words: list[Word], start: float, length: float) -> list[Word]:
     ]
 
 
+def refine_bounds(words: list[Word], start: float, end: float, lead: float = 3.0, slack: float = 8.0,
+                  gap: float = 0.4) -> tuple[float, float]:
+    """Move a clip's start and end to sentence boundaries (a pause or closing
+    punctuation) so it opens on a fresh thought and ends on a finished one.
+    The start may move by `lead` seconds, the end by `slack`."""
+    def breaks_before(i: int) -> bool:
+        return words[i].start - words[i - 1].end >= gap or words[i - 1].text[-1:] in ".?!"
+
+    # The first and last word of the list are skipped: the list may be cut mid-sentence there.
+    starts = [words[i].start for i in range(1, len(words)) if abs(words[i].start - start) <= lead and breaks_before(i)]
+    ends = [words[i].end for i in range(len(words) - 1) if abs(words[i].end - end) <= slack and breaks_before(i + 1)]
+    new_start = max(min(starts, key=lambda t: abs(t - start)) - 0.15, 0.0) if starts else start
+    new_end = min(ends, key=lambda t: abs(t - end)) + 0.25 if ends else end
+    return (new_start, new_end) if new_end - new_start >= 5 else (start, end)
+
+
 def text(words: list[Word]) -> str:
     return " ".join(w.text for w in words)
 

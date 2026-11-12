@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTokBot</title>
+<style>
+  :root {
+    --bg: #f5f4f1; --panel: #ffffff; --ink: #1c1b19; --muted: #6b6860; --line: #e2dfd8;
+    --accent: #0f766e; --accent-ink: #ffffff; --danger: #b42318; --warn-bg: #fdf3d7; --warn-ink: #6b4e00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131312; --panel: #1e1e1c; --ink: #ecebe7; --muted: #9a978e; --line: #33322e;
+            --accent: #2dd4bf; --accent-ink: #06201d; --danger: #f97066; --warn-bg: #3a2f0b; --warn-ink: #f5d98a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 20px 16px 0; max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 14px; }
+  .facts b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .notice { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); font-size: 14px; }
+  nav { display: flex; gap: 4px; margin-top: 18px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 10px 12px;
+               font: inherit; cursor: pointer; white-space: nowrap; }
+  nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  nav .n { font-variant-numeric: tabular-nums; margin-left: 4px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; }
+  .bar { display: flex; justify-content: flex-end; margin-bottom: 12px; min-height: 0; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .card video, .card .nofile { width: 100%; aspect-ratio: 9 / 16; max-height: 62vh; object-fit: contain; background: #000; display: block; }
+  .card .nofile { display: grid; place-items: center; color: #aaa; font-size: 13px; }
+  .body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .hook { font-weight: 600; }
+  textarea { width: 100%; min-height: 84px; resize: vertical; font: inherit; color: var(--ink); background: var(--bg);
+             border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .actions { display: flex; gap: 8px; margin-top: auto; flex-wrap: wrap; }
+  button.btn { font: inherit; border-radius: 8px; padding: 8px 12px; border: 1px solid var(--line); background: var(--panel);
+               color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.danger { color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .err { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .empty { color: var(--muted); padding: 48px 0; text-align: center; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+           padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TikTokBot</h1>
+  <div class="facts" id="facts"></div>
+  <div class="notice" id="notice" hidden></div>
+  <nav role="tablist" id="tabs"></nav>
+</header>
+<main>
+  <div class="bar" id="bar"></div>
+  <div id="view"></div>
+</main>
+<div id="toast" role="status"></div>
+<script>
+const TABS = [["pending", "To review"], ["queued", "Queued"], ["posted", "Posted"], ["failed", "Failed"]];
+let state = null, tab = null, dirty = new Set();
+
+const el = (tag, props = {}, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...kids.filter(k => k != null));
+  return node;
+};
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("on"), 2200);
+}
+async function post(path, body = {}) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+async function act(path, body, done) {
+  try { await post(path, body); toast(done); dirty.clear(); await load(true); }
+  catch (e) { toast(e.message); }
+}
+const fmtTime = iso => new Date(iso).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const num = v => v == null ? "–" : Number(v).toLocaleString();
+
+function card(c) {
+  const media = c.has_file
+    ? el("video", { src: `/media/${c.id}#t=0.6`, controls: true, preload: "metadata", playsInline: true })
+    : el("div", { className: "nofile", textContent: "Video file no longer available" });
+  const caption = el("textarea", { value: c.caption, ariaLabel: `Caption for clip ${c.id}` });
+  const save = el("button", { className: "btn", textContent: "Save caption", disabled: true });
+  caption.oninput = () => { save.disabled = caption.value.trim() === c.caption; save.disabled ? dirty.delete(c.id) : dirty.add(c.id); };
+  save.onclick = () => act(`/api/clips/${c.id}/caption`, { text: caption.value }, "Caption saved");
+  const actions = el("div", { className: "actions" });
+  if (c.status === "pending")
+    actions.append(el("button", { className: "btn primary", textContent: "Approve", onclick: () => act(`/api/clips/${c.id}/approve`, {}, `Clip #${c.id} approved`) }));
+  actions.append(save, el("button", { className: "btn danger", textContent: "Reject",
+    onclick: () => confirm(`Reject clip #${c.id}? The video file is deleted.`) && act(`/api/clips/${c.id}/reject`, {}, `Clip #${c.id} rejected`) }));
+  return el("article", { className: "card" }, media, el("div", { className: "body" },
+    el("div", { className: "meta", textContent: `#${c.id} · ${c.source || ""}` }),
+    c.hook ? el("div", { className: "hook", textContent: c.hook }) : null,
+    caption,
+    c.error ? el("div", { className: "err", textContent: `Last upload attempt failed: ${c.error}` }) : null,
+    actions));
+}
+function table(rows, failed) {
+  const head = failed ? ["Clip", "Caption", "Problem"] : ["Clip", "Caption", "Posted", "Views", "Likes", "Comments", "Shares"];
+  const tr = cells => el("tr", {}, ...cells);
+  const body = rows.slice().reverse().map(c => tr(failed
+    ? [el("td", { textContent: `#${c.id}` }), el("td", { textContent: c.caption }), el("td", { className: "err", textContent: c.error || "" })]
+    : [el("td", { textContent: `#${c.id}` }), el("td", { textContent: c.caption }),
+       el("td", { textContent: c.posted_at ? new Date(c.posted_at * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "" }),
+       ...[c.views, c.likes, c.comments, c.shares].map(v => el("td", { className: "num", textContent: num(v) }))]));
+  return el("div", { className: "tablewrap" }, el("table", {},
+    el("thead", {}, tr(head.map((h, i) => el("th", { textContent: h, className: !failed && i > 2 ? "num" : "" })))),
+    el("tbody", {}, ...body)));
+}
+const EMPTY = {
+  pending: "Nothing to review. New clips appear here when review.require_approval is on.",
+  queued: "No clips are queued. Run “tiktokbot harvest” or wait for the scheduler to create some.",
+  posted: "Nothing has been posted yet.", failed: "No failed clips.",
+};
+function render() {
+  const by = s => state.clips.filter(c => c.status === s);
+  if (!tab) tab = by("pending").length ? "pending" : "queued";
+  document.getElementById("facts").replaceChildren(
+    el("span", {}, "Next posts: ", el("b", { textContent: state.next_posts.map(fmtTime).join(", ") || "none" })),
+    el("span", {}, "Schedule time zone: ", el("b", { textContent: state.timezone })),
+    el("span", {}, "Mode: ", el("b", { textContent: state.mode === "draft" ? "send to TikTok inbox" : "publish directly" })));
+  const notice = document.getElementById("notice");
+  notice.hidden = state.connected;
+  notice.textContent = "No TikTok account is connected, so nothing can be posted. Run “tiktokbot auth”.";
+  document.getElementById("tabs").replaceChildren(...TABS.map(([key, label]) =>
+    el("button", { role: "tab", ariaSelected: String(tab === key), onclick: () => { tab = key; render(); } },
+      label, el("span", { className: "n", textContent: by(key).length }))));
+  const rows = by(tab), view = document.getElementById("view"), bar = document.getElementById("bar");
+  bar.replaceChildren(tab === "pending" && rows.length > 1
+    ? el("button", { className: "btn", textContent: `Approve all ${rows.length}`, onclick: () => act("/api/approve-all", {}, "All clips approved") }) : "");
+  if (!rows.length) return view.replaceChildren(el("div", { className: "empty", textContent: EMPTY[tab] }));
+  view.replaceChildren(tab === "pending" || tab === "queued"
+    ? el("div", { className: "grid" }, ...rows.map(card)) : table(rows, tab === "failed"));
+}
+async function load(force) {
+  // Don't redraw under someone typing a caption or watching a clip.
+  const busy = dirty.size || [...document.querySelectorAll("video")].some(v => !v.paused);
+  if (!force && state && busy) return;
+  try {
+    const res = await fetch("/api/state");
+    if (!res.ok) throw new Error();
+    const next = await res.json();
+    if (JSON.stringify(next) !== JSON.stringify(state)) { state = next; render(); }
+  } catch { if (!state) document.getElementById("view").replaceChildren(el("div", { className: "empty", textContent: "Could not load data from the bot." })); }
+}
+load(true); setInterval(load, 10000);
+</script>
+</body>
+</html>

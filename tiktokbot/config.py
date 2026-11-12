@@ -14,6 +14,7 @@ DEFAULTS = {
         "client_secret": "",
         "redirect_uri": "",
         "privacy_level": "SELF_ONLY",
+        "mode": "direct",
     },
     "schedule": {
         "timezone": "UTC",
@@ -38,6 +39,8 @@ DEFAULTS = {
     "review": {"require_approval": False},
     "posting": {"max_attempts": 3, "retry_minutes": 10},
     "notify": {"webhook_url": ""},
+    "stats": {"enabled": False},
+    "web": {"host": "127.0.0.1", "port": 8080, "token": ""},
     "sources": [],
     "caption": {"template": "{title} {hashtags}", "credit": True, "max_length": 2200},
     "paths": {"data_dir": "data"},
@@ -78,8 +81,11 @@ def load_config(path: str | Path = "config.yaml") -> dict:
 
     if "vertical" in cfg["clips"]:  # pre-layout configs
         cfg["clips"]["layout"] = "blur" if cfg["clips"].pop("vertical") else "fit"
-    if cfg["clips"]["layout"] not in ("blur", "crop", "fit"):
-        raise ConfigError("clips.layout must be blur, crop or fit")
+    if cfg["clips"]["layout"] not in ("smart", "blur", "crop", "fit"):
+        raise ConfigError("clips.layout must be smart, blur, crop or fit")
+    if tk["mode"] not in ("direct", "draft"):
+        raise ConfigError("tiktok.mode must be direct or draft")
+    tk["stats"] = bool(cfg["stats"]["enabled"])
 
     sources = []
     for src in cfg["sources"] or []:

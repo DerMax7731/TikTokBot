@@ -14,7 +14,6 @@ log = logging.getLogger(__name__)
 
 AUTH_URL = "https://www.tiktok.com/v2/auth/authorize/"
 API = "https://open.tiktokapis.com/v2"
-SCOPES = "user.info.basic,video.publish"
 MIN_CHUNK = 5 * 1024 * 1024
 CHUNK = 10 * 1024 * 1024
 
@@ -41,16 +40,25 @@ class TikTokClient:
         self.client_secret = cfg["client_secret"]
         self.redirect_uri = cfg["redirect_uri"]
         self.privacy_level = cfg.get("privacy_level", "SELF_ONLY")
+        self.mode = cfg.get("mode", "direct")   # direct: publish | draft: send to the account's TikTok inbox
+        self.stats = bool(cfg.get("stats"))
         self.token_path = Path(token_path)
         self.session = requests.Session()
 
     # ---- OAuth -----------------------------------------------------------
+    @property
+    def scopes(self) -> str:
+        scopes = ["user.info.basic", "video.upload" if self.mode == "draft" else "video.publish"]
+        if self.stats:
+            scopes.append("video.list")
+        return ",".join(scopes)
+
     def authorize_url(self) -> str:
         if not (self.client_key and self.client_secret and self.redirect_uri):
             raise TikTokError("tiktok.client_key, client_secret and redirect_uri must be set")
         query = {
             "client_key": self.client_key,
-            "scope": SCOPES,
+            "scope": self.scopes,
             "response_type": "code",
             "redirect_uri": self.redirect_uri,
             "state": secrets.token_urlsafe(16),
@@ -90,9 +98,10 @@ class TikTokClient:
         return tok["access_token"]
 
     # ---- Posting ---------------------------------------------------------
-    def _post(self, endpoint: str, body: dict | None = None) -> dict:
+    def _post(self, endpoint: str, body: dict | None = None, params: dict | None = None) -> dict:
         resp = self.session.post(
             f"{API}{endpoint}",
+            params=params,
             headers={
                 "Authorization": f"Bearer {self.access_token()}",
                 "Content-Type": "application/json; charset=UTF-8",
@@ -119,24 +128,20 @@ class TikTokClient:
         size = path.stat().st_size
         chunk_size, chunks = plan_chunks(size)
 
-        privacy = self.privacy_level
-        options = self.creator_info().get("privacy_level_options") or []
-        if options and privacy not in options:
-            log.warning("privacy level %s not available for this account, using %s", privacy, options[-1])
-            privacy = options[-1]
-
-        data = self._post(
-            "/post/publish/video/init/",
-            {
-                "post_info": {"title": caption, "privacy_level": privacy},
-                "source_info": {
-                    "source": "FILE_UPLOAD",
-                    "video_size": size,
-                    "chunk_size": chunk_size,
-                    "total_chunk_count": chunks,
-                },
-            },
-        )
+        source = {"source": "FILE_UPLOAD", "video_size": size, "chunk_size": chunk_size, "total_chunk_count": chunks}
+        if self.mode == "draft":
+            # Lands in the TikTok app's inbox; the caption is added there when publishing.
+            data = self._post("/post/publish/inbox/video/init/", {"source_info": source})
+        else:
+            privacy = self.privacy_level
+            options = self.creator_info().get("privacy_level_options") or []
+            if options and privacy not in options:
+                log.warning("privacy level %s not available for this account, using %s", privacy, options[-1])
+                privacy = options[-1]
+            data = self._post(
+                "/post/publish/video/init/",
+                {"post_info": {"title": caption, "privacy_level": privacy}, "source_info": source},
+            )
         publish_id, upload_url = data["publish_id"], data["upload_url"]
 
         with path.open("rb") as fh:
@@ -162,9 +167,29 @@ class TikTokClient:
         while time.time() < deadline:
             data = self._post("/post/publish/status/fetch/", {"publish_id": publish_id})
             status = data.get("status")
-            if status == "PUBLISH_COMPLETE":
+            if status == "PUBLISH_COMPLETE" or (self.mode == "draft" and status == "SEND_TO_USER_INBOX"):
                 return status
             if status == "FAILED":
                 raise TikTokError(f"publishing failed: {data.get('fail_reason')}")
             time.sleep(10)
         raise TikTokError(f"publish {publish_id} still processing after {timeout}s")
+
+    # ---- Statistics ------------------------------------------------------
+    def video_id(self, publish_id: str) -> str | None:
+        """The public video id of a finished post (None while private or still processing)."""
+        data = self._post("/post/publish/status/fetch/", {"publish_id": publish_id})
+        ids = data.get("publicaly_available_post_id") or data.get("publicly_available_post_id") or []
+        return str(ids[0]) if ids else None
+
+    def video_stats(self, video_ids: list[str]) -> dict[str, dict]:
+        """view/like/comment/share counts by video id (needs the video.list scope)."""
+        out: dict[str, dict] = {}
+        for i in range(0, len(video_ids), 20):
+            data = self._post(
+                "/video/query/",
+                {"filters": {"video_ids": video_ids[i: i + 20]}},
+                params={"fields": "id,view_count,like_count,comment_count,share_count"},
+            )
+            for video in data.get("videos") or []:
+                out[str(video["id"])] = video
+        return out
