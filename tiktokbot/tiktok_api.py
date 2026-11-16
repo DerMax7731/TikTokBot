@@ -1,6 +1,7 @@
 """TikTok Content Posting API client (official API: OAuth + direct post by file upload)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import secrets
@@ -63,15 +64,30 @@ class TikTokClient:
             "redirect_uri": self.redirect_uri,
             "state": secrets.token_urlsafe(16),
         }
+        # PKCE (required for desktop apps / localhost redirects). TikTok expects the
+        # hex-encoded SHA-256 of the verifier as the challenge.
+        verifier = secrets.token_urlsafe(48)
+        self._verifier_path.parent.mkdir(parents=True, exist_ok=True)
+        self._verifier_path.write_text(verifier)
+        self._verifier_path.chmod(0o600)
+        query["code_challenge"] = hashlib.sha256(verifier.encode()).hexdigest()
+        query["code_challenge_method"] = "S256"
         return f"{AUTH_URL}?{urlencode(query)}"
 
     def exchange_code(self, code_or_url: str) -> dict:
         code = code_or_url.strip()
         if "code=" in code:
             code = parse_qs(urlparse(code).query)["code"][0]
-        return self._token_request(
-            {"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect_uri}
-        )
+        extra = {"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect_uri}
+        if self._verifier_path.exists():
+            extra["code_verifier"] = self._verifier_path.read_text().strip()
+        tok = self._token_request(extra)
+        self._verifier_path.unlink(missing_ok=True)
+        return tok
+
+    @property
+    def _verifier_path(self) -> Path:
+        return self.token_path.parent / "pkce_verifier"
 
     def _token_request(self, extra: dict) -> dict:
         data = {"client_key": self.client_key, "client_secret": self.client_secret, **extra}
