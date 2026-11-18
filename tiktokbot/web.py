@@ -47,6 +47,7 @@ def _state(accounts: Accounts, account_id: str, bot: Bot) -> dict:
         })
     return {
         "app_ready": accounts.app_ready(),
+        "setup_done": accounts.app_ready() or bot.tiktok.mode == "download",
         "redirect_uri": accounts.app_settings()["redirect_uri"],
         "needs_reconnect": accounts.describe(account_id)["needs_reconnect"],
         "accounts": accounts.list(),
@@ -165,7 +166,7 @@ def make_handler(cfg: dict):
             if url.path == "/api/state":
                 return self._json(_state(accounts, account_id, bot))
             if m := re.fullmatch(r"/media/(\d+)", url.path):
-                return self._media(bot, int(m.group(1)))
+                return self._media(bot, int(m.group(1)), "download" in query)
             self._send(404, b"not found", "text/plain")
 
         do_HEAD = do_GET
@@ -182,7 +183,7 @@ def make_handler(cfg: dict):
             log.info("TikTok account connected: %s", info["name"])
             self._redirect(f"/?account={quote(info['id'])}&connected=1")
 
-        def _media(self, bot: Bot, clip_id: int) -> None:
+        def _media(self, bot: Bot, clip_id: int, attachment: bool = False) -> None:
             row = bot.db.get(clip_id)
             path = Path(row["path"]) if row else None
             if not path or not path.is_file():
@@ -203,6 +204,8 @@ def make_handler(cfg: dict):
                 self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Accept-Ranges", "bytes")
+            if attachment:
+                self.send_header("Content-Disposition", f'attachment; filename="tiktok-clip-{clip_id}.mp4"')
             self.send_header("Content-Length", str(end - start + 1))
             self.end_headers()
             if self.command == "HEAD":
@@ -234,6 +237,9 @@ def make_handler(cfg: dict):
             if not isinstance(body, dict):
                 return self._json({"error": "bad request"}, 400)
 
+            if url.path == "/api/manual":
+                accounts.save_mode("download")
+                return self._json({"ok": True})
             if url.path == "/api/app":
                 key, secret = str(body.get("client_key", "")), str(body.get("client_secret", ""))
                 redirect = str(body.get("redirect_uri", "")).strip()
@@ -285,22 +291,25 @@ def make_handler(cfg: dict):
                 for row in rows:
                     bot.db.set_status(row["id"], "queued")
                 return self._json({"ok": True, "approved": len(rows)})
-            m = re.fullmatch(r"/api/clips/(\d+)/(approve|reject|caption)", url.path)
+            m = re.fullmatch(r"/api/clips/(\d+)/(approve|reject|caption|done)", url.path)
             row = bot.db.get(int(m.group(1))) if m else None
             if not row:
                 return self._json({"error": "not found"}, 404)
             action = m.group(2)
             if action == "caption":
                 text = " ".join(str(body.get("text", "")).split())
-                if not text or row["status"] not in ("pending", "queued"):
+                if not text or row["status"] not in ("pending", "queued", "ready"):
                     return self._json({"error": "caption cannot be changed"}, 409)
                 bot.db.set_caption(row["id"], text[: int(cfg["caption"]["max_length"])])
+            elif action == "done":
+                if not bot.mark_done(row["id"]):
+                    return self._json({"error": "clip is not waiting to be published"}, 409)
             elif action == "approve":
                 if row["status"] != "pending":
                     return self._json({"error": "clip is not waiting for approval"}, 409)
                 bot.db.set_status(row["id"], "queued")
             else:
-                if row["status"] not in ("pending", "queued"):
+                if row["status"] not in ("pending", "queued", "ready"):
                     return self._json({"error": "clip can no longer be rejected"}, 409)
                 bot._drop(row, "rejected")
             self._json({"ok": True})

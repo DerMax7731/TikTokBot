@@ -85,8 +85,8 @@ def load_config(path: str | Path = "config.yaml") -> dict:
         cfg["clips"]["layout"] = "blur" if cfg["clips"].pop("vertical") else "fit"
     if cfg["clips"]["layout"] not in ("stream", "smart", "blur", "crop", "fit"):
         raise ConfigError("clips.layout must be stream, smart, blur, crop or fit")
-    if tk["mode"] not in ("direct", "draft"):
-        raise ConfigError("tiktok.mode must be direct or draft")
+    if tk["mode"] not in ("direct", "draft", "download"):
+        raise ConfigError("tiktok.mode must be direct, draft or download")
     tk["stats"] = bool(cfg["stats"]["enabled"])
 
     sources = []

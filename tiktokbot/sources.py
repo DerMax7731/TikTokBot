@@ -5,9 +5,12 @@ for analysis, and afterwards just the chosen stretches of video are fetched.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +22,7 @@ from .transcript import Word, from_youtube_json3
 
 log = logging.getLogger(__name__)
 PAD = 2.0  # extra seconds fetched around a section so cuts land on clean frames
+TWITCH_QUALITY = "1080p60,1080p,936p60,900p60,720p60,720p,best"
 
 
 def _ydl(opts: dict | None = None) -> yt_dlp.YoutubeDL:
@@ -177,12 +181,51 @@ def _record_live(entry: dict, src: dict, workdir: Path) -> Fetched:
         info = ydl.extract_info(entry["url"], download=False)
     path = workdir / f"live_{info.get('id')}_{int(time.time())}.mp4"
     log.info("recording %ss of live stream %s", seconds, entry["url"])
+    if is_twitch(entry["url"]) and src.get("skip_ads", True) and record_twitch(entry["url"], seconds, path):
+        return _live_fetched(entry, info, path, workdir)
     cmd = ["ffmpeg", "-y", "-loglevel", "error"]
     headers = "".join(f"{k}: {v}\r\n" for k, v in (info.get("http_headers") or {}).items())
     if headers:
         cmd += ["-headers", headers]
     cmd += ["-i", info["url"], "-t", str(seconds), "-c", "copy", "-movflags", "+faststart", str(path)]
     subprocess.run(cmd, check=True, timeout=seconds + 300)
+    return _live_fetched(entry, info, path, workdir)
+
+
+def is_twitch(url: str) -> bool:
+    return "twitch.tv/" in (url or "").lower()
+
+
+def streamlink_command() -> list[str] | None:
+    if importlib.util.find_spec("streamlink_cli") is not None:
+        return [sys.executable, "-m", "streamlink_cli"]
+    exe = shutil.which("streamlink")
+    return [exe] if exe else None
+
+
+def record_twitch(url: str, seconds: int, path: Path) -> bool:
+    """Record a Twitch stream with streamlink, which leaves out ad breaks, then close the gaps they leave."""
+    cmd = streamlink_command()
+    if not cmd:
+        log.warning("streamlink is not installed, so Twitch ad breaks can end up in recordings")
+        return False
+    ts = path.with_suffix(".ts")
+    try:
+        subprocess.run(cmd + ["--loglevel", "error", "--progress", "no", "--force",
+                              "--stream-segmented-duration", f"{int(seconds)}s", "-o", str(ts), url, TWITCH_QUALITY],
+                       check=True, timeout=seconds + 900)
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(ts), "-c", "copy",
+                        "-dts_delta_threshold", "2", "-movflags", "+faststart", str(path)], check=True, timeout=900)
+    except (subprocess.SubprocessError, OSError) as exc:
+        log.warning("ad-free Twitch recording failed, recording directly instead: %s", exc)
+        path.unlink(missing_ok=True)
+        return False
+    finally:
+        ts.unlink(missing_ok=True)
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _live_fetched(entry: dict, info: dict, path: Path, workdir: Path) -> Fetched:
     return Fetched(
         source_id=entry["id"], url=entry["url"], title=info.get("description") or info.get("title") or "",
         uploader=info.get("uploader") or "", duration=0.0, analysis_path=path, workdir=workdir, full_video=True,

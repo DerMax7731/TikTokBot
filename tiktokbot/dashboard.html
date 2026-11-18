@@ -92,7 +92,7 @@
 </main>
 <div id="toast" role="status"></div>
 <script>
-const TABS = [["pending", "To review"], ["queued", "Queued"], ["posted", "Posted"], ["failed", "Failed"], ["sources", "Streamers"], ["settings", "Settings"]];
+const TABS = [["pending", "To review"], ["queued", "Queued"], ["ready", "Ready to download"], ["posted", "Posted"], ["failed", "Failed"], ["sources", "Streamers"], ["settings", "Settings"]];
 const params = new URLSearchParams(location.search);
 let account = params.get("account") || (() => { try { return localStorage.getItem("tt_account"); } catch { return null; } })() || "main";
 const withAccount = path => path + (path.includes("?") ? "&" : "?") + "account=" + encodeURIComponent(account);
@@ -136,6 +136,14 @@ function card(c) {
   caption.oninput = () => { save.disabled = caption.value.trim() === c.caption; save.disabled ? dirty.delete(c.id) : dirty.add(c.id); };
   save.onclick = () => act(`/api/clips/${c.id}/caption`, { text: caption.value }, "Caption saved");
   const actions = el("div", { className: "actions" });
+  if (c.status === "ready")
+    actions.append(
+      el("a", { className: "btn primary", href: withAccount(`/media/${c.id}?download=1`), download: `tiktok-clip-${c.id}.mp4`, textContent: "Download video" }),
+      el("button", { className: "btn", textContent: "Copy caption", onclick: () => copyText(caption.value) }),
+      el("button", { className: "btn", textContent: "I posted it",
+        onclick: () => confirm(`Mark clip #${c.id} as posted? The video file is deleted from the bot.`) && act(`/api/clips/${c.id}/done`, {}, `Clip #${c.id} marked as posted`) }));
+  else if (c.has_file)
+    actions.append(el("a", { className: "btn", href: withAccount(`/media/${c.id}?download=1`), download: `tiktok-clip-${c.id}.mp4`, textContent: "Download" }));
   if (c.status === "pending")
     actions.append(el("button", { className: "btn primary", textContent: "Approve", onclick: () => act(`/api/clips/${c.id}/approve`, {}, `Clip #${c.id} approved`) }));
   actions.append(save, el("button", { className: "btn danger", textContent: "Reject",
@@ -146,6 +154,10 @@ function card(c) {
     caption,
     c.error ? el("div", { className: "err", textContent: `Last upload attempt failed: ${c.error}` }) : null,
     actions));
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("Caption copied"); }
+  catch { toast("Copy failed - select the caption and copy it by hand"); }
 }
 function table(rows, failed) {
   const head = failed ? ["Clip", "Caption", "Problem"] : ["Clip", "Caption", "Posted", "Views", "Likes", "Comments", "Shares"];
@@ -161,6 +173,7 @@ function table(rows, failed) {
 }
 const EMPTY = {
   pending: "Nothing to review. New clips appear here when review.require_approval is on.",
+  ready: "Nothing to download yet. At each post time the next queued clip moves here when publishing is set to “Download and post myself”.",
   queued: "No clips are queued. Add streamers in the Streamers tab, then use “Check for new clips now” or wait for the scheduler.",
   posted: "Nothing has been posted yet.", failed: "No failed clips.",
 };
@@ -180,7 +193,10 @@ function setupView() {
       el("li", { textContent: "Copy the client key and client secret from the app page into the fields below." }),
       el("li", { textContent: "In a sandbox app, add every TikTok account that should use the bot as a target user." })),
     field("client_key", "Client key"), field("client_secret", "Client secret", "password"),
-    field("redirect_uri", "Redirect URI"), el("div", {}, save));
+    field("redirect_uri", "Redirect URI"), el("div", {}, save),
+    el("p", { className: "meta" }, "No TikTok developer app? ",
+      el("button", { className: "btn", type: "button", textContent: "Skip, I download the clips and post them myself",
+        onclick: async () => { try { await post("/api/manual"); toast("Clips will be ready to download"); await load(true); } catch (err) { toast(err.message); } } })));
   f.onsubmit = async e => {
     e.preventDefault(); save.disabled = true;
     try { await post("/api/app", vals); toast("App saved"); await load(true); }
@@ -194,7 +210,8 @@ function settingsView() {
   const approval = el("input", { type: "checkbox", checked: state.require_approval });
   const mode = el("select", {},
     el("option", { value: "draft", selected: state.mode === "draft", textContent: "Send to my TikTok inbox, I publish with one tap (works with every app)" }),
-    el("option", { value: "direct", selected: state.mode === "direct", textContent: "Publish directly (public posts need a TikTok-audited app)" }));
+    el("option", { value: "direct", selected: state.mode === "direct", textContent: "Publish directly (public posts need a TikTok-audited app)" }),
+    el("option", { value: "download", selected: state.mode === "download", textContent: "Download and post myself (no TikTok app needed)" }));
   const save = el("button", { className: "btn primary", textContent: "Save settings" });
   save.onclick = () => act("/api/settings", { post_times: times.value, timezone: zone.value, require_approval: approval.checked, mode: mode.value }, "Settings saved");
   const acc = state.accounts.find(a => a.id === account);
@@ -209,7 +226,9 @@ function settingsView() {
       onclick: () => confirm(`Disconnect ${acc.name}? The bot stops posting for it; clips and streamers are kept.`) && act("/api/accounts/disconnect", {}, "Account disconnected") })));
   return el("div", { className: "settings" }, ...parts);
 }
+const MODE_LABEL = { draft: "send to TikTok inbox", direct: "publish directly", download: "download and post myself" };
 function accountBar() {
+  if (!state.app_ready) return document.getElementById("accountbar").replaceChildren(el("b", { textContent: "Download mode" }));
   const sel = el("select", { ariaLabel: "TikTok account" },
     ...state.accounts.map(a => el("option", { value: a.id, selected: a.id === account,
       textContent: a.name + (a.connected ? "" : " (not connected)") })));
@@ -255,7 +274,7 @@ function sourcesView() {
 }
 function render() {
   const view0 = document.getElementById("view");
-  if (!state.app_ready) {
+  if (!state.setup_done) {
     ["accountbar", "facts", "tabs", "bar"].forEach(id => document.getElementById(id).replaceChildren());
     document.getElementById("notice").hidden = true;
     return view0.replaceChildren(setupView());
@@ -266,9 +285,9 @@ function render() {
   document.getElementById("facts").replaceChildren(
     el("span", {}, "Next posts: ", el("b", { textContent: state.next_posts.map(fmtTime).join(", ") || "none" })),
     el("span", {}, "Schedule time zone: ", el("b", { textContent: state.timezone })),
-    el("span", {}, "Mode: ", el("b", { textContent: state.mode === "draft" ? "send to TikTok inbox" : "publish directly" })));
+    el("span", {}, "Mode: ", el("b", { textContent: MODE_LABEL[state.mode] || state.mode })));
   const notice = document.getElementById("notice");
-  notice.hidden = state.connected && !state.needs_reconnect;
+  notice.hidden = state.mode === "download" || (state.connected && !state.needs_reconnect);
   notice.replaceChildren(state.connected
       ? "The publishing setting changed and needs a new TikTok permission. "
       : "This TikTok account is not connected, so nothing can be posted. ",
@@ -290,12 +309,12 @@ function render() {
   bar.replaceChildren(tab === "pending" && rows.length > 1
     ? el("button", { className: "btn", textContent: `Approve all ${rows.length}`, onclick: () => act("/api/approve-all", {}, "All clips approved") }) : "");
   if (!rows.length) return view.replaceChildren(el("div", { className: "empty", textContent: EMPTY[tab] }));
-  view.replaceChildren(tab === "pending" || tab === "queued"
+  view.replaceChildren(tab === "pending" || tab === "queued" || tab === "ready"
     ? el("div", { className: "grid" }, ...rows.map(card)) : table(rows, tab === "failed"));
 }
 async function load(force) {
   // Don't redraw under someone typing a caption or watching a clip.
-  const busy = dirty.size || (tab === "sources" && form.url) || tab === "settings" || (state && !state.app_ready) || [...document.querySelectorAll("video")].some(v => !v.paused);
+  const busy = dirty.size || (tab === "sources" && form.url) || tab === "settings" || (state && !state.setup_done) || [...document.querySelectorAll("video")].some(v => !v.paused);
   if (!force && state && busy) return;
   try {
     const res = await fetch(withAccount("/api/state"));

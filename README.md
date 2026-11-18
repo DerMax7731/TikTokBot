@@ -25,6 +25,10 @@ Keep the window open - the bot only runs while it is open.
 
 **4. Create your TikTok app** (one time, free)
 
+Don't want a TikTok developer app? Click **Skip, I download the clips and post them myself** on the setup screen
+and go to step 5.3. At every post time the next clip moves to the **Ready to download** tab: download the video,
+copy the caption, upload it in TikTok yourself and click **I posted it**.
+
 1. Sign in at <https://developers.tiktok.com>, open **Manage apps > Connect an app**.
 2. Add the products **Login Kit** and **Content Posting API**.
 3. Under Login Kit > Desktop, add the redirect URI `http://localhost:8080/callback`.
@@ -42,6 +46,9 @@ Keep the window open - the bot only runs while it is open.
 That's it. The bot looks for new material every hour, cuts clips and, at your post times, sends them to
 your TikTok inbox. Open the TikTok app and publish them with one tap. You can connect several TikTok
 accounts; each one has its own streamers, clips and post times.
+
+Twitch streams are recorded with [streamlink](https://streamlink.github.io/), which leaves out ad breaks, so
+no "Commercial break in progress" screens end up in your clips.
 
 Only add creators who allow their content to be clipped.
 

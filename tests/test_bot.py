@@ -1,6 +1,7 @@
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 import yaml
 
 from tiktokbot import ai, clipper, highlights, sources, transcript
+from tiktokbot.accounts import Accounts
 from tiktokbot.cli import main
 from tiktokbot.config import ConfigError, load_config
 from tiktokbot.pipeline import Bot, build_caption
@@ -674,3 +676,87 @@ def test_normal_subtitles_and_clean_captions():
     text = build_caption(cfg, "Trymacs (live) 2026-11-18 13:50", "Trymacs", ["fyp"])
     assert "(live)" not in text and "2026" not in text and "#trymacs" in text and "Credit: Trymacs" in text
     assert "!merch" not in build_caption(cfg, "GTA 6 Tag 1 | !merch", "Papaplatte", [])
+
+
+def test_download_mode_keeps_clips_for_manual_posting(video, tmp_path, monkeypatch):
+    bot = Bot(load_config(write_cfg(tmp_path, tiktok={"mode": "download"})))
+    fake_source(monkeypatch, video)
+    assert bot.harvest() == 2
+    monkeypatch.setattr(TikTokClient, "upload_video", lambda *a: pytest.fail("must not upload in download mode"))
+    assert bot.tick(datetime(2026, 1, 1, 9, 1, tzinfo=UTC)) == 1
+    ready = bot.db.clips("ready")
+    assert len(ready) == 1 and Path(ready[0]["path"]).exists()
+    assert bot.db.queued_count() == 1
+    assert bot.mark_done(ready[0]["id"])
+    assert not Path(ready[0]["path"]).exists()
+    assert bot.db.get(ready[0]["id"])["status"] == "posted"
+    assert not bot.mark_done(ready[0]["id"])
+
+
+def test_dashboard_manual_mode_without_tiktok_app(video, tmp_path, monkeypatch):
+    import json as _json
+    import threading as _threading
+    import urllib.request
+    from tiktokbot import web
+    cfg = load_config(write_cfg(tmp_path, tiktok={"client_key": "", "client_secret": "", "redirect_uri": ""}))
+    server = web.make_server(cfg, "127.0.0.1", 0)
+    _threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def get(path):
+        with urllib.request.urlopen(base + path) as r:
+            return r.headers, r.read()
+
+    def post(path, body=None):
+        req = urllib.request.Request(base + path, data=_json.dumps(body or {}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        assert _json.loads(get("/api/state")[1])["setup_done"] is False
+        assert post("/api/manual") == 200
+        state = _json.loads(get("/api/state")[1])
+        assert state["setup_done"] and state["mode"] == "download" and not state["app_ready"]
+        fake_source(monkeypatch, video)
+        bot = Bot(Accounts(cfg).cfg_for("main"))
+        bot.harvest()
+        bot.post_next()
+        clip = bot.db.clips("ready")[0]
+        headers, body = get(f"/media/{clip['id']}?download=1")
+        assert "attachment" in headers["Content-Disposition"] and len(body) == Path(clip["path"]).stat().st_size
+        assert post(f"/api/clips/{clip['id']}/done") == 200
+        assert post(f"/api/clips/{clip['id']}/done") == 409
+        assert bot.db.get(clip["id"])["status"] == "posted"
+    finally:
+        server.shutdown()
+
+
+def test_twitch_recording_skips_ads_and_falls_back(tmp_path, monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if "streamlink_cli" in cmd or cmd[0].endswith("streamlink"):
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"ts")
+        else:
+            Path(cmd[-1]).write_bytes(b"mp4")
+
+    monkeypatch.setattr(sources.subprocess, "run", run)
+    monkeypatch.setattr(sources, "streamlink_command", lambda: ["streamlink"])
+    out = tmp_path / "rec.mp4"
+    assert sources.record_twitch("https://www.twitch.tv/x", 60, out)
+    assert "--stream-segmented-duration" in calls[0] and "60s" in calls[0]
+    assert "-dts_delta_threshold" in calls[1] and not out.with_suffix(".ts").exists()
+
+    def broken(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(sources.subprocess, "run", broken)
+    assert not sources.record_twitch("https://www.twitch.tv/x", 60, tmp_path / "b.mp4")
+    monkeypatch.setattr(sources, "streamlink_command", lambda: None)
+    assert not sources.record_twitch("https://www.twitch.tv/x", 60, tmp_path / "c.mp4")
+    assert sources.is_twitch("https://www.twitch.tv/trymacs") and not sources.is_twitch("https://kick.com/x")

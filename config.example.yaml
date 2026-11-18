@@ -11,6 +11,8 @@ tiktok:
   # direct: the bot publishes the post itself.
   # draft:  the clip is sent to your TikTok inbox and you publish it in the app
   #         (works publicly with an unaudited app; needs the app's "Upload to inbox" permission).
+  # download: no TikTok app needed; at each post time the clip waits in the dashboard's
+  #         "Ready to download" tab and you post it yourself.
   mode: "direct"
 
 schedule:
@@ -80,6 +82,7 @@ sources:
   # A live stream (Twitch, YouTube Live, Kick ...): records this many seconds when live.
   # - url: "https://www.twitch.tv/yourchannel"
   #   record_seconds: 1200
+  #   skip_ads: true              # Twitch: record with streamlink so ad breaks are left out (default)
   # A TikTok profile or video.
   # - url: "https://www.tiktok.com/@youraccount"
   #   latest: 3

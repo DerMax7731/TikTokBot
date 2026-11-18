@@ -242,6 +242,14 @@ class Bot:
             media.cleanup()
 
     # ---- Posting ---------------------------------------------------------
+    def mark_done(self, clip_id: int) -> bool:
+        clip = self.db.get(clip_id)
+        if not clip or clip["status"] not in ("ready", "queued"):
+            return False
+        self.db.mark_posted(clip_id, "")
+        Path(clip["path"]).unlink(missing_ok=True)
+        return True
+
     def _drop(self, clip, status: str, error: str | None = None) -> None:
         self.db.set_status(clip["id"], status, error)
         Path(clip["path"]).unlink(missing_ok=True)
@@ -258,6 +266,11 @@ class Bot:
                 continue
             if dry_run:
                 log.info("[dry-run] would post %s: %s", clip["path"], clip["caption"])
+                return clip["id"], True
+            if self.tiktok.mode == "download":
+                self.db.set_status(clip["id"], "ready")
+                log.info("clip %s is ready to download: %s", clip["id"], clip["path"])
+                notify.send(self.cfg["notify"], f"Clip #{clip['id']} is ready to download in the dashboard. Caption: {clip['caption']}")
                 return clip["id"], True
             try:
                 publish_id = self.tiktok.upload_video(clip["path"], clip["caption"])

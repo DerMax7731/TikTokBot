@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS clips (
     path TEXT NOT NULL,
     caption TEXT NOT NULL,
     source_id TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',   -- pending | queued | posted | failed | rejected
+    status TEXT NOT NULL DEFAULT 'queued',   -- pending | queued | ready | posted | failed | rejected
     publish_id TEXT,
     error TEXT,
     created_at REAL,

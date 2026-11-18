@@ -3,7 +3,7 @@ name = "tiktokbot"
 version = "0.3.0"
 description = "Clips highlights from YouTube, live streams and TikTok and posts them to TikTok on a schedule"
 requires-python = ">=3.10"
-dependencies = ["yt-dlp>=2025.1.1", "requests>=2.31", "PyYAML>=6.0", "numpy>=1.26", "tzdata; sys_platform == 'win32'"]
+dependencies = ["yt-dlp>=2025.1.1", "requests>=2.31", "PyYAML>=6.0", "numpy>=1.26", "streamlink>=6", "tzdata; sys_platform == 'win32'"]
 
 [project.optional-dependencies]
 ai = ["anthropic>=1.0", "pydantic>=2"]

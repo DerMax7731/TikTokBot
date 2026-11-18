@@ -54,7 +54,7 @@ class Accounts:
             "client_key": tk["client_key"] or saved.get("client_key", ""),
             "client_secret": tk["client_secret"] or saved.get("client_secret", ""),
             "redirect_uri": saved.get("redirect_uri") or tk["redirect_uri"],
-            "mode": saved.get("mode") if saved.get("mode") in ("direct", "draft") else tk["mode"],
+            "mode": saved.get("mode") if saved.get("mode") in ("direct", "draft", "download") else tk["mode"],
         }
 
     def app_ready(self) -> bool:
@@ -62,8 +62,8 @@ class Accounts:
         return bool(app["client_key"] and app["client_secret"] and app["redirect_uri"])
 
     def save_mode(self, mode: str) -> None:
-        if mode not in ("direct", "draft"):
-            raise ValueError("publishing must be draft or direct")
+        if mode not in ("direct", "draft", "download"):
+            raise ValueError("publishing must be draft, direct or download")
         current = _read(self.app_file)
         current["mode"] = mode
         _write(self.app_file, current, private=True)
@@ -131,10 +131,11 @@ class Accounts:
         folder = self.folder(account_id)
         name = info.get("name") or ("Main account" if account_id == MAIN else account_id)
         token = _read(folder / "tiktok_token.json")
-        need = "video.upload" if self.app_settings()["mode"] == "draft" else "video.publish"
+        mode = self.app_settings()["mode"]
+        need = "video.upload" if mode == "draft" else "video.publish"
         granted = str(token.get("scope", "")).replace(" ", "").split(",")
         return {"id": account_id, "name": name, "avatar": info.get("avatar", ""), "connected": bool(token),
-                "needs_reconnect": bool(token) and bool(token.get("scope")) and need not in granted}
+                "needs_reconnect": mode != "download" and bool(token) and bool(token.get("scope")) and need not in granted}
 
     def list(self) -> list[dict]:
         return [self.describe(i) for i in self.ids()]
