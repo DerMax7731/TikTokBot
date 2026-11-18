@@ -12,9 +12,9 @@ DEFAULTS = {
     "tiktok": {
         "client_key": "",
         "client_secret": "",
-        "redirect_uri": "",
+        "redirect_uri": "http://localhost:8080/callback",
         "privacy_level": "SELF_ONLY",
-        "mode": "direct",
+        "mode": "draft",
     },
     "schedule": {
         "timezone": "UTC",
@@ -63,11 +63,12 @@ def _merge(base: dict, override: dict) -> dict:
 
 def load_config(path: str | Path = "config.yaml") -> dict:
     path = Path(path)
-    if not path.exists():
-        raise ConfigError(f"{path} not found - copy config.example.yaml to {path} and edit it")
-    cfg = _merge(DEFAULTS, yaml.safe_load(path.read_text()) or {})
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    cfg = _merge(DEFAULTS, raw or {})
 
     tk = cfg["tiktok"]
+    cfg["web"]["host"] = os.environ.get("TIKTOKBOT_WEB_HOST") or cfg["web"]["host"]
+    cfg["web"]["token"] = os.environ.get("TIKTOKBOT_WEB_TOKEN") or cfg["web"]["token"]
     tk["client_key"] = os.environ.get("TIKTOK_CLIENT_KEY") or tk["client_key"]
     tk["client_secret"] = os.environ.get("TIKTOK_CLIENT_SECRET") or tk["client_secret"]
 

@@ -4,6 +4,47 @@ Finds the best moments in YouTube videos, live streams (Twitch, YouTube Live,
 Kick, ...) and TikTok videos, turns them into finished vertical clips and posts
 them to your TikTok account three times a day.
 
+## Quick start (about 10 minutes)
+
+**1. Install the two tools the bot needs**
+
+- Python 3.10 or newer - Windows: `winget install Python.Python.3.12`, macOS: `brew install python`
+- ffmpeg - Windows: `winget install Gyan.FFmpeg`, macOS: `brew install ffmpeg`, Linux: `sudo apt install ffmpeg`
+
+**2. Download the bot**
+
+Click **Code > Download ZIP** on GitHub and unpack it, or `git clone https://github.com/DerMax7731/TikTokBot`.
+
+**3. Start it**
+
+- Windows: double-click `start-bot.bat`
+- macOS / Linux: run `./start-bot.sh`
+
+The first start installs everything (a few minutes), then the dashboard opens at <http://localhost:8080>.
+Keep the window open - the bot only runs while it is open.
+
+**4. Create your TikTok app** (one time, free)
+
+1. Sign in at <https://developers.tiktok.com>, open **Manage apps > Connect an app**.
+2. Add the products **Login Kit** and **Content Posting API**.
+3. Under Login Kit > Desktop, add the redirect URI `http://localhost:8080/callback`.
+4. In **Sandbox > Target users**, add the TikTok account you want to post with.
+5. Copy the **client key** and **client secret** into the setup screen of the dashboard.
+
+**5. Connect TikTok and add streamers**
+
+1. On tiktok.com, be logged in with the account you added as target user.
+2. In the dashboard click **Connect TikTok account** and approve.
+3. Open **Streamers**, paste a channel or stream link (YouTube, Twitch, Kick, TikTok) and click **Add**.
+   Optionally only take videos whose title contains certain words.
+4. Open **Settings** and set your post times and time zone.
+
+That's it. The bot looks for new material every hour, cuts clips and, at your post times, sends them to
+your TikTok inbox. Open the TikTok app and publish them with one tap. You can connect several TikTok
+accounts; each one has its own streamers, clips and post times.
+
+Only add creators who allow their content to be clipped.
+
 ## What a clip gets
 
 - **The right moment** - audio energy is combined with YouTube's "most replayed"
@@ -20,9 +61,9 @@ them to your TikTok account three times a day.
 Long videos and VODs are handled efficiently: only the audio is downloaded for
 analysis, then just the chosen stretches of video.
 
-## Setup
+## Manual setup (command line)
 
-Requires Python 3.10+ and `ffmpeg`.
+Requires Python 3.10+ and `ffmpeg`. `config.yaml` is optional - everything in it can also be set in the dashboard.
 
 ```bash
 pip install -e ".[ai,subtitles,vision]"   # all extras are optional

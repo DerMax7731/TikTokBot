@@ -73,6 +73,7 @@
   .setup label, .settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   .setup input, .settings input[type=text] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
   .settings { max-width: 620px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; }
+  .settings select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
   .settings .check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 15px; }
   code { font-size: 13px; background: var(--bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 </style>
@@ -160,7 +161,7 @@ function table(rows, failed) {
 }
 const EMPTY = {
   pending: "Nothing to review. New clips appear here when review.require_approval is on.",
-  queued: "No clips are queued. Run “tiktokbot harvest” or wait for the scheduler to create some.",
+  queued: "No clips are queued. Add streamers in the Streamers tab, then use “Check for new clips now” or wait for the scheduler.",
   posted: "Nothing has been posted yet.", failed: "No failed clips.",
 };
 function setupView() {
@@ -189,12 +190,18 @@ function setupView() {
 }
 function settingsView() {
   const times = el("input", { type: "text", value: state.post_times.join(", ") });
+  const zone = el("input", { type: "text", value: state.timezone });
   const approval = el("input", { type: "checkbox", checked: state.require_approval });
+  const mode = el("select", {},
+    el("option", { value: "draft", selected: state.mode === "draft", textContent: "Send to my TikTok inbox, I publish with one tap (works with every app)" }),
+    el("option", { value: "direct", selected: state.mode === "direct", textContent: "Publish directly (public posts need a TikTok-audited app)" }));
   const save = el("button", { className: "btn primary", textContent: "Save settings" });
-  save.onclick = () => act("/api/settings", { post_times: times.value, require_approval: approval.checked }, "Settings saved");
+  save.onclick = () => act("/api/settings", { post_times: times.value, timezone: zone.value, require_approval: approval.checked, mode: mode.value }, "Settings saved");
   const acc = state.accounts.find(a => a.id === account);
   const parts = [
-    el("label", {}, `Post times (${state.timezone})`, times),
+    el("label", {}, "Post times", times),
+    el("label", {}, "Time zone", zone),
+    el("label", {}, "Publishing (all accounts)", mode),
     el("label", { className: "check" }, approval, "Clips wait for my approval before they are posted"),
     el("div", { className: "actions" }, save)];
   if (acc && acc.connected)
@@ -261,9 +268,11 @@ function render() {
     el("span", {}, "Schedule time zone: ", el("b", { textContent: state.timezone })),
     el("span", {}, "Mode: ", el("b", { textContent: state.mode === "draft" ? "send to TikTok inbox" : "publish directly" })));
   const notice = document.getElementById("notice");
-  notice.hidden = state.connected;
-  notice.replaceChildren("This TikTok account is not connected, so nothing can be posted. ",
-    el("a", { href: "/connect", textContent: "Connect it now" }), ".");
+  notice.hidden = state.connected && !state.needs_reconnect;
+  notice.replaceChildren(state.connected
+      ? "The publishing setting changed and needs a new TikTok permission. "
+      : "This TikTok account is not connected, so nothing can be posted. ",
+    el("a", { href: "/connect", textContent: state.connected ? "Reconnect it now" : "Connect it now" }), ".");
   document.getElementById("tabs").replaceChildren(...TABS.map(([key, label]) =>
     el("button", { role: "tab", ariaSelected: String(tab === key), onclick: () => { tab = key; render(); } },
       label, key === "settings" ? null : el("span", { className: "n", textContent: key === "sources" ? state.sources.length : by(key).length }))));

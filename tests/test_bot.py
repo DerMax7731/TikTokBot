@@ -636,3 +636,23 @@ def test_dashboard_connect_flow(tmp_path, monkeypatch):
         assert state["post_times"] == ["10:00", "22:00"] and state["require_approval"] is False
     finally:
         server.shutdown()
+
+
+def test_runs_without_config_and_dashboard_settings(tmp_path, monkeypatch):
+    from tiktokbot.accounts import MAIN, Accounts
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(tmp_path / "missing.yaml")
+    assert cfg["sources"] == [] and cfg["tiktok"]["mode"] == "draft"
+    assert cfg["tiktok"]["redirect_uri"] == "http://localhost:8080/callback"
+    accounts = Accounts(cfg)
+    accounts.save_settings(MAIN, timezone="Europe/Berlin")
+    assert accounts.cfg_for(MAIN)["schedule"]["timezone"] == "Europe/Berlin"
+    with pytest.raises(ValueError):
+        accounts.save_settings(MAIN, timezone="Mars/Olympus")
+    with pytest.raises(ValueError):
+        accounts.save_mode("loud")
+    (tmp_path / "data" / "tiktok_token.json").write_text('{"access_token": "a", "scope": "user.info.basic,video.publish"}')
+    assert accounts.describe(MAIN)["needs_reconnect"]
+    accounts.save_mode("direct")
+    assert not accounts.describe(MAIN)["needs_reconnect"]
+    assert accounts.cfg_for(MAIN)["tiktok"]["mode"] == "direct"

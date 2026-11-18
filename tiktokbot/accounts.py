@@ -9,6 +9,7 @@ import secrets
 import shutil
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .pipeline import Bot
 from .tiktok_api import TikTokClient
@@ -53,11 +54,19 @@ class Accounts:
             "client_key": tk["client_key"] or saved.get("client_key", ""),
             "client_secret": tk["client_secret"] or saved.get("client_secret", ""),
             "redirect_uri": saved.get("redirect_uri") or tk["redirect_uri"],
+            "mode": saved.get("mode") if saved.get("mode") in ("direct", "draft") else tk["mode"],
         }
 
     def app_ready(self) -> bool:
         app = self.app_settings()
         return bool(app["client_key"] and app["client_secret"] and app["redirect_uri"])
+
+    def save_mode(self, mode: str) -> None:
+        if mode not in ("direct", "draft"):
+            raise ValueError("publishing must be draft or direct")
+        current = _read(self.app_file)
+        current["mode"] = mode
+        _write(self.app_file, current, private=True)
 
     def save_app(self, client_key: str, client_secret: str, redirect_uri: str) -> None:
         current = _read(self.app_file)
@@ -79,8 +88,14 @@ class Accounts:
         return _read(self.folder(account_id) / "account.json")
 
     def save_settings(self, account_id: str, post_times: list[str] | None = None,
-                      require_approval: bool | None = None) -> dict:
+                      require_approval: bool | None = None, timezone: str | None = None) -> dict:
         data = self.settings(account_id)
+        if timezone is not None:
+            try:
+                ZoneInfo(timezone.strip())
+            except (ZoneInfoNotFoundError, ValueError):
+                raise ValueError("unknown time zone - use a name like Europe/Berlin or America/New_York") from None
+            data["timezone"] = timezone.strip()
         if post_times is not None:
             times = sorted({t.strip() for t in post_times if t.strip()})
             if not times or not all(TIME_RE.fullmatch(t) for t in times):
@@ -102,6 +117,8 @@ class Accounts:
         extra = self.settings(account_id)
         if extra.get("post_times"):
             cfg["schedule"]["post_times"] = list(extra["post_times"])
+        if extra.get("timezone"):
+            cfg["schedule"]["timezone"] = extra["timezone"]
         if "require_approval" in extra:
             cfg["review"]["require_approval"] = bool(extra["require_approval"])
         return cfg
@@ -113,8 +130,11 @@ class Accounts:
         info = self.settings(account_id)
         folder = self.folder(account_id)
         name = info.get("name") or ("Main account" if account_id == MAIN else account_id)
-        return {"id": account_id, "name": name, "avatar": info.get("avatar", ""),
-                "connected": (folder / "tiktok_token.json").exists()}
+        token = _read(folder / "tiktok_token.json")
+        need = "video.upload" if self.app_settings()["mode"] == "draft" else "video.publish"
+        granted = str(token.get("scope", "")).replace(" ", "").split(",")
+        return {"id": account_id, "name": name, "avatar": info.get("avatar", ""), "connected": bool(token),
+                "needs_reconnect": bool(token) and bool(token.get("scope")) and need not in granted}
 
     def list(self) -> list[dict]:
         return [self.describe(i) for i in self.ids()]

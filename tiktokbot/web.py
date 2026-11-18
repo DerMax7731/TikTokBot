@@ -48,6 +48,7 @@ def _state(accounts: Accounts, account_id: str, bot: Bot) -> dict:
     return {
         "app_ready": accounts.app_ready(),
         "redirect_uri": accounts.app_settings()["redirect_uri"],
+        "needs_reconnect": accounts.describe(account_id)["needs_reconnect"],
         "accounts": accounts.list(),
         "account": account_id,
         "clips": clips,
@@ -254,10 +255,13 @@ def make_handler(cfg: dict):
                 return self._json({"ok": True})
             if url.path == "/api/settings":
                 try:
+                    if "mode" in body:
+                        accounts.save_mode(str(body["mode"]))
                     accounts.save_settings(
                         account_id,
                         _words(body["post_times"]) if "post_times" in body else None,
                         body.get("require_approval") if "require_approval" in body else None,
+                        str(body["timezone"]) if body.get("timezone") else None,
                     )
                 except ValueError as exc:
                     return self._json({"error": str(exc)}, 400)
@@ -308,7 +312,7 @@ def make_server(cfg: dict, host: str | None = None, port: int | None = None) -> 
     host = host or cfg["web"]["host"]
     port = cfg["web"]["port"] if port is None else port
     if host not in LOOPBACK and not cfg["web"].get("token"):
-        raise ValueError("set web.token in config.yaml before exposing the dashboard beyond this machine")
+        raise ValueError("set web.token in config.yaml (or the TIKTOKBOT_WEB_TOKEN variable) before exposing the dashboard beyond this machine")
     server = ThreadingHTTPServer((host, int(port)), make_handler(cfg))
     server.daemon_threads = True
     return server
