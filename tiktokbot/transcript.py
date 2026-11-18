@@ -123,8 +123,27 @@ def chunk_words(words: list[Word], max_words: int = 3, max_chars: int = 16, max_
     return chunks
 
 
+def phrases(words: list[Word], max_words: int = 7, max_chars: int = 34, max_gap: float = 0.7) -> list[list[Word]]:
+    out: list[list[Word]] = []
+    for w in words:
+        cur = out[-1] if out else None
+        ends_sentence = bool(cur) and cur[-1].text.rstrip().endswith((".", "!", "?"))
+        if (cur and not ends_sentence and len(cur) < max_words and w.start - cur[-1].end <= max_gap
+                and sum(len(x.text) + 1 for x in cur) + len(w.text) <= max_chars):
+            cur.append(w)
+        else:
+            out.append([w])
+    return out
+
+
+def _sentence_case(text: str) -> str:
+    text = " ".join(text.split())
+    return text[:1].upper() + text[1:] if text else text
+
+
 def build_ass(words: list[Word], path: str | Path, hook: str | None = None, length: float = 0.0,
-              font: str = "DejaVu Sans", highlight: str = "&H0000F0FF", hook_seconds: float = 4.0) -> Path:
+              font: str = "DejaVu Sans", highlight: str = "&H0000F0FF", hook_seconds: float = 4.0,
+              style: str = "normal", margin_v: int = 520) -> Path:
     """Write an ASS file for a 1080x1920 clip: word-by-word captions that light up
     the spoken word, plus an optional hook headline at the top."""
     path = Path(path)
@@ -136,7 +155,9 @@ def build_ass(words: list[Word], path: str | Path, hook: str | None = None, leng
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
         "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         "MarginL, MarginR, MarginV, Encoding",
-        f"Style: Cap,{font},92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,2,2,70,70,520,1",
+        (f"Style: Cap,{font},92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,2,2,70,70,{margin_v},1"
+         if style == "karaoke" else
+         f"Style: Cap,{font},66,&H00FFFFFF,&H00FFFFFF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,5,1,2,90,90,{margin_v},1"),
         f"Style: Hook,{font},64,&H00000000,&H00000000,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,14,0,8,90,90,230,1",
         "",
         "[Events]",
@@ -145,6 +166,21 @@ def build_ass(words: list[Word], path: str | Path, hook: str | None = None, leng
     if hook:
         end = min(hook_seconds, length) if length else hook_seconds
         lines.append(f"Dialogue: 1,{_ts(0)},{_ts(end)},Hook,,0,0,0,,{{\\fad(150,250)}}{_esc(hook)}")
+    if style != "karaoke":
+        groups = phrases(words)
+        for n, group in enumerate(groups):
+            start = group[0].start
+            nxt = groups[n + 1][0].start if n + 1 < len(groups) else None
+            end = max(group[-1].end + 0.25, start + 0.6)
+            if nxt is not None:
+                end = min(end, nxt)
+            if length:
+                end = min(end, length)
+            if end > start:
+                text = _sentence_case(" ".join(w.text for w in group))
+                lines.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Cap,,0,0,0,,{_esc(text)}")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
     for chunk in chunk_words(words):
         for i, word in enumerate(chunk):
             start = word.start

@@ -184,6 +184,6 @@ def _record_live(entry: dict, src: dict, workdir: Path) -> Fetched:
     cmd += ["-i", info["url"], "-t", str(seconds), "-c", "copy", "-movflags", "+faststart", str(path)]
     subprocess.run(cmd, check=True, timeout=seconds + 300)
     return Fetched(
-        source_id=entry["id"], url=entry["url"], title=info.get("title") or "",
+        source_id=entry["id"], url=entry["url"], title=info.get("description") or info.get("title") or "",
         uploader=info.get("uploader") or "", duration=0.0, analysis_path=path, workdir=workdir, full_video=True,
     )

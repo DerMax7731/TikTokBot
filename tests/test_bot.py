@@ -72,7 +72,7 @@ def probe(path, entries, stream="v:0"):
 def test_config_defaults_and_validation(tmp_path):
     cfg = load_config(write_cfg(tmp_path))
     assert len(cfg["schedule"]["post_times"]) == 3
-    assert cfg["clips"]["layout"] == "blur"
+    assert cfg["clips"]["layout"] == "stream"
     assert load_config(write_cfg(tmp_path, clips={"vertical": False}))["clips"]["layout"] == "fit"
     with pytest.raises(ConfigError):
         load_config(write_cfg(tmp_path, schedule={"post_times": ["25:00"]}))
@@ -130,7 +130,7 @@ def test_youtube_json3_parsing():
 
 def test_ass_generation(tmp_path):
     words = [Word(0.0, 0.4, "this"), Word(0.4, 0.8, "is"), Word(0.8, 1.2, "{wild}"), Word(3.0, 3.5, "right")]
-    ass = transcript.build_ass(words, tmp_path / "c.ass", hook="You won't believe this", length=6).read_text()
+    ass = transcript.build_ass(words, tmp_path / "c.ass", hook="You won't believe this", length=6, style="karaoke").read_text()
     assert "Style: Cap" in ass and "Style: Hook" in ass
     assert "You won't believe this" in ass
     dialog = [line for line in ass.splitlines() if line.startswith("Dialogue: 0")]
@@ -175,9 +175,9 @@ def test_render_without_audio_track(tmp_path):
 # ---- captions ------------------------------------------------------------
 def test_caption(tmp_path):
     cfg = load_config(write_cfg(tmp_path))
-    assert build_caption(cfg, " Big play ", "Streamer", ["fyp", "#clips"]) == "Big play #fyp #clips (via Streamer)"
+    assert build_caption(cfg, " Big play ", "Streamer", ["fyp", "#clips"]) == "Big play #fyp #clips #streamer | Credit: Streamer"
     text = build_caption(cfg, "T", "Up", ["fyp"], ai_caption="He did it.", ai_hashtags=["FYP", "clutch win"])
-    assert text == "He did it. #fyp #clutchwin (via Up)"
+    assert text == "He did it. #fyp #clutchwin #up | Credit: Up"
 
 
 # ---- pipeline ------------------------------------------------------------
@@ -215,12 +215,12 @@ def test_ai_picks_clips_and_writes_copy(video, tmp_path, monkeypatch):
     captured = {}
     real = transcript.build_ass
     monkeypatch.setattr(transcript, "build_ass",
-                        lambda words, path, hook, length, font: captured.update(words=words, hook=hook) or real(words, path, hook, length, font))
+                        lambda words, path, hook, length, font, **k: captured.update(words=words, hook=hook) or real(words, path, hook, length, font, **k))
     bot = Bot(load_config(write_cfg(tmp_path, clips={"per_source": 1})))
     assert bot.harvest() == 1
     assert len(seen["cands"]) == 3 and all(c["transcript"] for c in seen["cands"])   # 3x candidates offered
     clip = bot.db.clips("queued")[0]
-    assert clip["hook"] == "Wait for it" and clip["caption"] == "The moment. #fyp #wow (via Up)"
+    assert clip["hook"] == "Wait for it" and clip["caption"] == "The moment. #fyp #wow #up | Credit: Up"
     assert captured["hook"] == "Wait for it" and len(captured["words"]) >= 4
     assert not list((bot.data / "clips").glob("*.ass"))
 
@@ -231,7 +231,7 @@ def test_ai_failure_falls_back(video, tmp_path, monkeypatch):
     monkeypatch.setattr(ai, "pick_clips", lambda *a: None)
     bot = Bot(load_config(write_cfg(tmp_path)))
     assert bot.harvest() == 2
-    assert bot.db.clips("queued")[0]["caption"] == "Title #fyp (via Up)"
+    assert bot.db.clips("queued")[0]["caption"] == "Title #fyp #up | Credit: Up"
 
 
 def test_retry_then_give_up(video, tmp_path, monkeypatch):
@@ -384,7 +384,7 @@ def test_smart_layout_uses_face_position(video, tmp_path, monkeypatch):
     real = clipper.render_clip
     monkeypatch.setattr(clipper, "render_clip", lambda *a, **k: seen.append(a) or real(*a, **k))
     bot = Bot(load_config(write_cfg(tmp_path, clips={"per_source": 1, "layout": "smart"})))
-    assert bot.harvest() == 1 and seen[0][-1] == 0.7
+    assert bot.harvest() == 1 and seen[0][-2] == 0.7
 
 
 # ---- draft mode and statistics -------------------------------------------
@@ -656,3 +656,21 @@ def test_runs_without_config_and_dashboard_settings(tmp_path, monkeypatch):
     accounts.save_mode("direct")
     assert not accounts.describe(MAIN)["needs_reconnect"]
     assert accounts.cfg_for(MAIN)["tiktok"]["mode"] == "direct"
+
+
+@pytest.mark.parametrize("face", [(0.05, 0.6, 0.12, 0.2), (0.8, 0.05, 0.15, 0.25), None])
+def test_stream_layout_renders_vertical(video, tmp_path, face):
+    ass = transcript.build_ass([Word(0.2, 0.6, "hallo"), Word(0.7, 1.2, "leute.")], tmp_path / "s.ass", length=4,
+                               margin_v=1070)
+    out = clipper.render_clip(video, tmp_path / "clip.mp4", 20, 4, "stream", ass, face=face)
+    assert probe(out, "stream=width,height") == "1080,1920"
+
+
+def test_normal_subtitles_and_clean_captions():
+    words = [Word(0.0, 0.3, "das"), Word(0.35, 0.6, "ist"), Word(0.65, 1.0, "krass."), Word(1.1, 1.4, "wow")]
+    groups = transcript.phrases(words)
+    assert [len(g) for g in groups] == [3, 1]
+    cfg = load_config("does-not-exist.yaml")
+    text = build_caption(cfg, "Trymacs (live) 2026-11-18 13:50", "Trymacs", ["fyp"])
+    assert "(live)" not in text and "2026" not in text and "#trymacs" in text and "Credit: Trymacs" in text
+    assert "!merch" not in build_caption(cfg, "GTA 6 Tag 1 | !merch", "Papaplatte", [])

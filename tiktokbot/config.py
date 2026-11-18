@@ -25,7 +25,8 @@ DEFAULTS = {
         "length_seconds": 35,
         "per_source": 3,
         "min_gap_seconds": 20,
-        "layout": "blur",
+        "layout": "stream",
+        "subtitle_style": "normal",
         "subtitles": True,
         "hook_overlay": True,
         "normalize_audio": True,
@@ -82,8 +83,8 @@ def load_config(path: str | Path = "config.yaml") -> dict:
 
     if "vertical" in cfg["clips"]:  # pre-layout configs
         cfg["clips"]["layout"] = "blur" if cfg["clips"].pop("vertical") else "fit"
-    if cfg["clips"]["layout"] not in ("smart", "blur", "crop", "fit"):
-        raise ConfigError("clips.layout must be smart, blur, crop or fit")
+    if cfg["clips"]["layout"] not in ("stream", "smart", "blur", "crop", "fit"):
+        raise ConfigError("clips.layout must be stream, smart, blur, crop or fit")
     if tk["mode"] not in ("direct", "draft"):
         raise ConfigError("tiktok.mode must be direct or draft")
     tk["stats"] = bool(cfg["stats"]["enabled"])

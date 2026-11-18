@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urlparse
 import logging
 import time
@@ -26,16 +27,29 @@ def _tags(*groups) -> str:
     return " ".join(out[:8])
 
 
+def clean_title(title: str, uploader: str = "") -> str:
+    text = re.sub(r"\(live\)", " ", title or "", flags=re.I)
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}(\s+\d{1,2}:\d{2}(:\d{2})?)?\b", " ", text)
+    text = re.sub(r"(^|\s)![A-Za-z0-9_]+", " ", text)
+    text = re.sub(r"[|]+", " ", text)
+    text = " ".join(text.split()).strip(" -:")
+    if uploader and text.lower() == uploader.lower():
+        return ""
+    return text
+
+
 def build_caption(cfg: dict, title: str, uploader: str, hashtags: list[str], part: int = 1, total: int = 1,
                   ai_caption: str | None = None, ai_hashtags: list[str] | None = None) -> str:
     ccfg = cfg["caption"]
-    tags = _tags(hashtags, ai_hashtags)
+    own = re.sub(r"[^0-9A-Za-z_]", "", uploader or "").lower()
+    tags = _tags(hashtags, ai_hashtags, [own] if own else [])
+    title = clean_title(title, uploader) or (f"{uploader} clip" if uploader else "Clip")
     if ai_caption:
         text = f"{ai_caption.strip()} {tags}"
     else:
         text = ccfg["template"].format(title=title.strip(), hashtags=tags, uploader=uploader, part=part, total=total)
     if ccfg.get("credit") and uploader:
-        text = f"{text} (via {uploader})"
+        text = f"{text} | Credit: {uploader}"
     return " ".join(text.split())[: int(ccfg["max_length"])]
 
 
@@ -141,6 +155,15 @@ class Bot:
                 log.warning("transcription failed: %s", exc)
         return []
 
+    def _face(self, seg, offset: float, length: float):
+        if not vision.available():
+            return None
+        try:
+            return vision.face_box(seg, offset, length)
+        except Exception as exc:
+            log.warning("face detection failed: %s", exc)
+            return None
+
     def _focus(self, seg, offset: float, length: float) -> float | None:
         if not vision.available():
             return None
@@ -193,13 +216,18 @@ class Bot:
                 subs = cand["words"] if ccfg["subtitles"] else []
                 ass = None
                 if subs or hook:
-                    ass = transcript.build_ass(subs, out.with_suffix(".ass"), hook, cand["length"], ccfg["font"])
+                    stream = (src.get("layout") or ccfg["layout"]) == "stream"
+                    ass = transcript.build_ass(subs, out.with_suffix(".ass"), hook, cand["length"], ccfg["font"],
+                                               style=ccfg.get("subtitle_style", "normal"),
+                                               margin_v=1920 - 640 - 210 if stream else 520)
                 seg, offset = media.segment(cand["start"], cand["length"])
-                smart = ccfg["layout"] == "smart"
+                layout = src.get("layout") or ccfg["layout"]
+                smart = layout == "smart"
                 focus = self._focus(seg, offset, cand["length"]) if smart else None
+                face = self._face(seg, offset, cand["length"]) if layout == "stream" else None
                 try:
-                    clipper.render_clip(seg, out, offset, cand["length"], "blur" if smart else ccfg["layout"],
-                                        ass, ccfg["normalize_audio"], focus)
+                    clipper.render_clip(seg, out, offset, cand["length"], "blur" if smart else layout,
+                                        ass, ccfg["normalize_audio"], focus, face)
                 finally:
                     if ass:
                         ass.unlink(missing_ok=True)

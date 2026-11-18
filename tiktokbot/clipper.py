@@ -19,6 +19,23 @@ LAYOUTS = {
 }
 
 
+FACE_H, GAME_H = 640, 1280
+
+
+def stream_layout(face: tuple[float, float, float, float] | None) -> str:
+    game = (f"[g]crop='min(iw,ih*1080/{GAME_H})':ih:'(iw-ow)/2':0,"
+            f"scale=1080:{GAME_H},setsar=1[bot]")
+    if face is None:
+        return LAYOUTS["blur"]
+    fx, fy, fw, fh = face
+    cx, cy = fx + fw / 2, fy + fh * 0.75
+    bh = min(max(fh * 3.4, 0.2), 1.0)
+    top = (f"[f]crop='min(iw,ih*{bh:.4f}*1080/{FACE_H})':'ih*{bh:.4f}':"
+           f"'min(max(iw*{cx:.4f}-ow/2,0),iw-ow)':'min(max(ih*{cy:.4f}-oh/2,0),ih-oh)',"
+           f"scale=1080:{FACE_H},setsar=1[top]")
+    return f"[0:v]split[f][g];{top};{game};[top][bot]vstack"
+
+
 def focus_crop(center_x: float) -> str:
     """Fill the screen, keeping the horizontal position `center_x` (0..1 of the frame width) in view."""
     return (
@@ -28,14 +45,20 @@ def focus_crop(center_x: float) -> str:
 
 
 def render_clip(src: str | Path, dst: str | Path, start: float, length: float, layout: str = "blur",
-                ass: str | Path | None = None, normalize_audio: bool = True, focus_x: float | None = None) -> Path:
-    """`focus_x` (0..1) turns any layout into a crop centred on that horizontal position."""
-    if layout not in LAYOUTS:
-        raise ValueError(f"unknown layout {layout!r}, expected one of {sorted(LAYOUTS)}")
+                ass: str | Path | None = None, normalize_audio: bool = True, focus_x: float | None = None,
+                face: tuple[float, float, float, float] | None = None) -> Path:
+    """`focus_x` (0..1) turns any layout into a crop centred on that horizontal position;
+    layout "stream" puts the area around `face` on top and the centre of the frame below."""
+    if layout not in LAYOUTS and layout != "stream":
+        raise ValueError(f"unknown layout {layout!r}, expected one of {sorted(LAYOUTS) + ['stream']}")
     dst = Path(dst).resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     fade_out = max(length - 0.35, 0)
-    graph = (focus_crop(focus_x) if focus_x is not None else LAYOUTS[layout]) + ",setsar=1,fps=30"
+    if layout == "stream":
+        base = stream_layout(face)
+    else:
+        base = focus_crop(focus_x) if focus_x is not None else LAYOUTS[layout]
+    graph = base + ",setsar=1,fps=30"
     if ass:
         # Referenced by bare file name (ffmpeg runs in its directory) to avoid filter escaping issues.
         graph += f",ass={Path(ass).name}"

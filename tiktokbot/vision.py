@@ -15,6 +15,36 @@ def available() -> bool:
         return False
 
 
+def face_box(path: str | Path, start: float, length: float, samples: int = 12) -> tuple[float, float, float, float] | None:
+    import cv2
+    import numpy as np
+
+    detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    cap = cv2.VideoCapture(str(path))
+    boxes = []
+    try:
+        for i in range(samples):
+            cap.set(cv2.CAP_PROP_POS_MSEC, (start + length * (i + 0.5) / samples) * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            h0, w0 = gray.shape
+            scale = 640 / max(w0, 1)
+            if scale < 1:
+                gray = cv2.resize(gray, None, fx=scale, fy=scale)
+            faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(28, 28))
+            if len(faces):
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                gh, gw = gray.shape
+                boxes.append((x / gw, y / gh, w / gw, h / gh))
+    finally:
+        cap.release()
+    if len(boxes) < max(samples // 3, 1):
+        return None
+    return tuple(float(v) for v in np.median(np.array(boxes), axis=0))
+
+
 def face_center_x(path: str | Path, start: float, length: float, samples: int = 10) -> float | None:
     """Typical horizontal position (0..1) of the largest face in the clip, or None
     if no face shows up in at least a third of the sampled frames."""
