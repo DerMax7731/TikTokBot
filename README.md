@@ -157,7 +157,7 @@ harvested first.
 
 ### Keeping it running
 
-- **Docker:** `docker build -t tiktokbot .` then see the `docker run` line in the `Dockerfile`.
+- **Docker (server/VM):** copy the folder to the server, put a `config.yaml` next to it (an empty file is fine) and run `docker compose up -d --build`. The dashboard listens on the server's `127.0.0.1:8080`; open it from your PC through an SSH tunnel (`ssh -L 8080:localhost:8080 user@server`) and go to http://localhost:8080. Connecting TikTok works the same way through the tunnel. Data lives in `./data`.
 - **systemd:** `deploy/tiktokbot.service`.
 - **cron:** `*/5 * * * * cd /path/to/TikTokBot && tiktokbot run --once`
 
