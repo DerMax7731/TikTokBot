@@ -54,7 +54,7 @@ class TikTokClient:
             scopes.append("video.list")
         return ",".join(scopes)
 
-    def authorize_url(self) -> str:
+    def authorize_url(self, state: str | None = None) -> str:
         if not (self.client_key and self.client_secret and self.redirect_uri):
             raise TikTokError("tiktok.client_key, client_secret and redirect_uri must be set")
         query = {
@@ -62,7 +62,7 @@ class TikTokClient:
             "scope": self.scopes,
             "response_type": "code",
             "redirect_uri": self.redirect_uri,
-            "state": secrets.token_urlsafe(16),
+            "state": state or secrets.token_urlsafe(16),
         }
         # PKCE (required for desktop apps / localhost redirects). TikTok expects the
         # hex-encoded SHA-256 of the verifier as the challenge.
@@ -135,6 +135,22 @@ class TikTokClient:
         if err.get("code", "ok") != "ok":
             raise TikTokError(f"{endpoint}: {err.get('code')} - {err.get('message')}")
         return payload.get("data") or {}
+
+    def user_info(self) -> dict:
+        resp = self.session.get(
+            f"{API}/user/info/",
+            params={"fields": "open_id,display_name,avatar_url"},
+            headers={"Authorization": f"Bearer {self.access_token()}"},
+            timeout=30,
+        )
+        try:
+            payload = resp.json()
+        except ValueError:
+            raise TikTokError(f"/user/info/: HTTP {resp.status_code}") from None
+        err = payload.get("error") or {}
+        if err.get("code", "ok") != "ok":
+            raise TikTokError(f"/user/info/: {err.get('code')} - {err.get('message')}")
+        return (payload.get("data") or {}).get("user") or {}
 
     def creator_info(self) -> dict:
         return self._post("/post/publish/creator_info/query/")

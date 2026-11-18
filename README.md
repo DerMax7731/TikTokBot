@@ -81,6 +81,20 @@ Watch each clip, edit its caption, approve or reject it, and see the upcoming
 post times, failures and results. To reach it from your phone set
 `web.host: "0.0.0.0"` and a `web.token`, then open `http://<machine>:8080/?token=<token>`.
 
+Everything can also be set up from the dashboard, without the command line:
+
+- **Setup screen** - on first start, enter your TikTok app's client key, client secret and redirect URI
+  (`http://localhost:8080/callback`). They are stored in `data/app.json`.
+- **Connect TikTok account** - signs in with TikTok and returns to the dashboard. Connect as many accounts as you like;
+  each one has its own streamers, clips, review queue and post times (stored under `data/accounts/<id>/`).
+  TikTok uses the account that is logged in on tiktok.com in that browser. A sandbox app only accepts accounts
+  listed as target users in the developer portal; anyone else gets `non_sandbox_target` until the app passes TikTok's audit.
+- **Streamers** - paste a channel or stream link, optionally only titles containing certain words, plus hashtags.
+  "Check for new clips now" harvests immediately.
+- **Settings** - post times, approval before posting, disconnect.
+
+On Windows, `start-bot.bat` starts the scheduler and dashboard with a double click.
+
 ### Reviewing clips before they go out
 
 Set `review.require_approval: true`. New clips then wait until you approve them

@@ -80,10 +80,19 @@ class Fetched:
             path.unlink(missing_ok=True)
 
 
+def matches(info: dict, keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    text = " ".join(str(info.get(k) or "") for k in ("title", "fulltitle", "description")).lower()
+    return any(k in text for k in keywords)
+
+
 def list_candidates(src: dict) -> list[dict]:
     """Resolve a configured source into concrete entries (videos or a live stream)."""
     url = src["url"]
-    with _ydl({"extract_flat": "in_playlist", "playlistend": int(src.get("latest", 2)) * 3}) as ydl:
+    keywords = [k.lower() for k in (src.get("match") or [])]
+    scan = int(src.get("scan", 30)) if keywords else int(src.get("latest", 2)) * 3
+    with _ydl({"extract_flat": "in_playlist", "playlistend": scan}) as ydl:
         info = ydl.extract_info(url, download=False)
     if info is None:
         return []
@@ -94,8 +103,10 @@ def list_candidates(src: dict) -> list[dict]:
                 "url": e.get("url") or e.get("webpage_url"),
                 "live": False,
             }
-            for e in (info.get("entries") or []) if e
+            for e in (info.get("entries") or []) if e and matches(e, keywords)
         ]
+    if not matches(info, keywords):
+        return []
     if info.get("is_live"):
         # A stream can be recorded again later: one recording per hour at most.
         return [{"id": f"{_source_id(info)}:{int(time.time() // 3600)}", "url": url, "live": True}]

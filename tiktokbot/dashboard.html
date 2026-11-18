@@ -54,11 +54,33 @@
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
            padding: 8px 14px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   #toast.on { opacity: 1; }
+  .addform { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px;
+             display: grid; gap: 12px; grid-template-columns: 2fr 1fr 1fr auto; align-items: end; }
+  .addform label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); min-width: 0; }
+  .addform input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
+  .addform input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { font-size: 13px; color: var(--muted); margin: -4px 0 16px; }
+  .tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin: 0 4px 4px 0; }
+  td a { color: var(--ink); overflow-wrap: anywhere; }
+  @media (max-width: 760px) { .addform { grid-template-columns: 1fr; } }
+  .accountbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .accountbar select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; max-width: 100%; }
+  a.btn { font: inherit; border-radius: 8px; padding: 8px 12px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none; display: inline-block; }
+  a.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .setup { max-width: 620px; margin: 24px auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 14px; }
+  .setup h2 { margin: 0; font-size: 18px; }
+  .setup ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+  .setup label, .settings label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .setup input, .settings input[type=text] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
+  .settings { max-width: 620px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 14px; }
+  .settings .check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); font-size: 15px; }
+  code { font-size: 13px; background: var(--bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <header>
   <h1>TikTokBot</h1>
+  <div class="accountbar" id="accountbar"></div>
   <div class="facts" id="facts"></div>
   <div class="notice" id="notice" hidden></div>
   <nav role="tablist" id="tabs"></nav>
@@ -69,7 +91,16 @@
 </main>
 <div id="toast" role="status"></div>
 <script>
-const TABS = [["pending", "To review"], ["queued", "Queued"], ["posted", "Posted"], ["failed", "Failed"]];
+const TABS = [["pending", "To review"], ["queued", "Queued"], ["posted", "Posted"], ["failed", "Failed"], ["sources", "Streamers"], ["settings", "Settings"]];
+const params = new URLSearchParams(location.search);
+let account = params.get("account") || (() => { try { return localStorage.getItem("tt_account"); } catch { return null; } })() || "main";
+const withAccount = path => path + (path.includes("?") ? "&" : "?") + "account=" + encodeURIComponent(account);
+function chooseAccount(id) {
+  account = id; tab = null; dirty.clear();
+  try { localStorage.setItem("tt_account", id); } catch {}
+  state = null; load(true);
+}
+let form = { url: "", match: "gta 6, gta vi, gta6", hashtags: "gta6, fyp" };
 let state = null, tab = null, dirty = new Set();
 
 const el = (tag, props = {}, ...kids) => {
@@ -83,7 +114,7 @@ function toast(msg) {
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("on"), 2200);
 }
 async function post(path, body = {}) {
-  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account, ...body }) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Request failed");
   return data;
@@ -97,7 +128,7 @@ const num = v => v == null ? "–" : Number(v).toLocaleString();
 
 function card(c) {
   const media = c.has_file
-    ? el("video", { src: `/media/${c.id}#t=0.6`, controls: true, preload: "metadata", playsInline: true })
+    ? el("video", { src: withAccount(`/media/${c.id}`) + "#t=0.6", controls: true, preload: "metadata", playsInline: true })
     : el("div", { className: "nofile", textContent: "Video file no longer available" });
   const caption = el("textarea", { value: c.caption, ariaLabel: `Caption for clip ${c.id}` });
   const save = el("button", { className: "btn", textContent: "Save caption", disabled: true });
@@ -132,7 +163,97 @@ const EMPTY = {
   queued: "No clips are queued. Run “tiktokbot harvest” or wait for the scheduler to create some.",
   posted: "Nothing has been posted yet.", failed: "No failed clips.",
 };
+function setupView() {
+  const vals = { client_key: "", client_secret: "", redirect_uri: state.redirect_uri || "http://localhost:8080/callback" };
+  const field = (key, label, type = "text") => {
+    const i = el("input", { value: vals[key], type, autocomplete: "off" });
+    i.oninput = () => { vals[key] = i.value; };
+    return el("label", {}, label, i);
+  };
+  const save = el("button", { className: "btn primary", textContent: "Save and continue", type: "submit" });
+  const f = el("form", { className: "setup" },
+    el("h2", { textContent: "Connect your TikTok developer app" }),
+    el("ol", {},
+      el("li", { textContent: "Create an app on developers.tiktok.com and add Login Kit and the Content Posting API (Direct Post)." }),
+      el("li", {}, "Under Login Kit add this redirect URI: ", el("code", { textContent: vals.redirect_uri })),
+      el("li", { textContent: "Copy the client key and client secret from the app page into the fields below." }),
+      el("li", { textContent: "In a sandbox app, add every TikTok account that should use the bot as a target user." })),
+    field("client_key", "Client key"), field("client_secret", "Client secret", "password"),
+    field("redirect_uri", "Redirect URI"), el("div", {}, save));
+  f.onsubmit = async e => {
+    e.preventDefault(); save.disabled = true;
+    try { await post("/api/app", vals); toast("App saved"); await load(true); }
+    catch (err) { toast(err.message); save.disabled = false; }
+  };
+  return f;
+}
+function settingsView() {
+  const times = el("input", { type: "text", value: state.post_times.join(", ") });
+  const approval = el("input", { type: "checkbox", checked: state.require_approval });
+  const save = el("button", { className: "btn primary", textContent: "Save settings" });
+  save.onclick = () => act("/api/settings", { post_times: times.value, require_approval: approval.checked }, "Settings saved");
+  const acc = state.accounts.find(a => a.id === account);
+  const parts = [
+    el("label", {}, `Post times (${state.timezone})`, times),
+    el("label", { className: "check" }, approval, "Clips wait for my approval before they are posted"),
+    el("div", { className: "actions" }, save)];
+  if (acc && acc.connected)
+    parts.push(el("div", { className: "actions" }, el("button", { className: "btn danger", textContent: "Disconnect this TikTok account",
+      onclick: () => confirm(`Disconnect ${acc.name}? The bot stops posting for it; clips and streamers are kept.`) && act("/api/accounts/disconnect", {}, "Account disconnected") })));
+  return el("div", { className: "settings" }, ...parts);
+}
+function accountBar() {
+  const sel = el("select", { ariaLabel: "TikTok account" },
+    ...state.accounts.map(a => el("option", { value: a.id, selected: a.id === account,
+      textContent: a.name + (a.connected ? "" : " (not connected)") })));
+  sel.onchange = () => chooseAccount(sel.value);
+  document.getElementById("accountbar").replaceChildren(
+    state.accounts.length > 1 ? sel : el("b", { textContent: state.accounts[0].name + (state.connected ? "" : " (not connected)") }),
+    el("a", { className: "btn primary", href: "/connect", textContent: state.accounts.some(a => a.connected) ? "Connect another TikTok account" : "Connect TikTok account" }),
+    el("span", { className: "meta", textContent: "TikTok logs in with the account open on tiktok.com in this browser. Sandbox apps only accept accounts listed as target users." }));
+}
+function sourcesView() {
+  const input = (key, label, placeholder) => {
+    const i = el("input", { value: form[key], placeholder, type: key === "url" ? "url" : "text" });
+    i.oninput = () => { form[key] = i.value; };
+    return el("label", {}, label, i);
+  };
+  const add = el("button", { className: "btn primary", textContent: "Add", type: "submit" });
+  const f = el("form", { className: "addform" },
+    input("url", "Channel or stream link", "https://www.twitch.tv/…  or  https://www.youtube.com/@…/videos"),
+    input("match", "Only titles containing (comma separated, empty = all)", "gta 6, gta vi"),
+    input("hashtags", "Hashtags", "gta6, fyp"), add);
+  f.onsubmit = async e => {
+    e.preventDefault(); add.disabled = true;
+    try { await post("/api/sources", form); form.url = ""; toast("Streamer added"); await load(true); }
+    catch (err) { toast(err.message); add.disabled = false; }
+  };
+  const rows = state.sources.map(s => el("tr", {},
+    el("td", {}, el("a", { href: s.url, target: "_blank", rel: "noopener", textContent: s.url })),
+    el("td", {}, el("span", { className: "tag", textContent: s.live ? "live recording" : "videos" })),
+    el("td", {}, ...(s.match.length ? s.match.map(m => el("span", { className: "tag", textContent: m })) : ["all"])),
+    el("td", {}, s.hashtags.map(h => "#" + h).join(" ")),
+    el("td", {}, s.removable
+      ? el("button", { className: "btn danger", textContent: "Remove",
+          onclick: () => confirm(`Stop clipping ${s.url}?`) && act("/api/sources/remove", { url: s.url }, "Streamer removed") })
+      : el("span", { className: "meta", textContent: "in config.yaml" }))));
+  const table = state.sources.length
+    ? el("div", { className: "tablewrap" }, el("table", {},
+        el("thead", {}, el("tr", {}, ...["Link", "Type", "Only titles with", "Hashtags", ""].map(h => el("th", { textContent: h })))),
+        el("tbody", {}, ...rows)))
+    : el("div", { className: "empty", textContent: "No streamers yet. Add a link above." });
+  return el("div", {}, f,
+    el("p", { className: "hint", textContent: "Only add creators who allow their content to be clipped. Twitch and Kick links are recorded while the streamer is live; YouTube channel links take the newest matching videos." }),
+    table);
+}
 function render() {
+  const view0 = document.getElementById("view");
+  if (!state.app_ready) {
+    ["accountbar", "facts", "tabs", "bar"].forEach(id => document.getElementById(id).replaceChildren());
+    document.getElementById("notice").hidden = true;
+    return view0.replaceChildren(setupView());
+  }
+  accountBar();
   const by = s => state.clips.filter(c => c.status === s);
   if (!tab) tab = by("pending").length ? "pending" : "queued";
   document.getElementById("facts").replaceChildren(
@@ -141,11 +262,22 @@ function render() {
     el("span", {}, "Mode: ", el("b", { textContent: state.mode === "draft" ? "send to TikTok inbox" : "publish directly" })));
   const notice = document.getElementById("notice");
   notice.hidden = state.connected;
-  notice.textContent = "No TikTok account is connected, so nothing can be posted. Run “tiktokbot auth”.";
+  notice.replaceChildren("This TikTok account is not connected, so nothing can be posted. ",
+    el("a", { href: "/connect", textContent: "Connect it now" }), ".");
   document.getElementById("tabs").replaceChildren(...TABS.map(([key, label]) =>
     el("button", { role: "tab", ariaSelected: String(tab === key), onclick: () => { tab = key; render(); } },
-      label, el("span", { className: "n", textContent: by(key).length }))));
-  const rows = by(tab), view = document.getElementById("view"), bar = document.getElementById("bar");
+      label, key === "settings" ? null : el("span", { className: "n", textContent: key === "sources" ? state.sources.length : by(key).length }))));
+  const view = document.getElementById("view"), bar = document.getElementById("bar");
+  if (tab === "settings") {
+    bar.replaceChildren();
+    return view.replaceChildren(settingsView());
+  }
+  if (tab === "sources") {
+    bar.replaceChildren(el("button", { className: "btn", textContent: state.harvesting ? "Checking…" : "Check for new clips now",
+      disabled: state.harvesting, onclick: () => act("/api/harvest", {}, "Checking sources in the background") }));
+    return view.replaceChildren(sourcesView());
+  }
+  const rows = by(tab);
   bar.replaceChildren(tab === "pending" && rows.length > 1
     ? el("button", { className: "btn", textContent: `Approve all ${rows.length}`, onclick: () => act("/api/approve-all", {}, "All clips approved") }) : "");
   if (!rows.length) return view.replaceChildren(el("div", { className: "empty", textContent: EMPTY[tab] }));
@@ -154,15 +286,17 @@ function render() {
 }
 async function load(force) {
   // Don't redraw under someone typing a caption or watching a clip.
-  const busy = dirty.size || [...document.querySelectorAll("video")].some(v => !v.paused);
+  const busy = dirty.size || (tab === "sources" && form.url) || tab === "settings" || (state && !state.app_ready) || [...document.querySelectorAll("video")].some(v => !v.paused);
   if (!force && state && busy) return;
   try {
-    const res = await fetch("/api/state");
+    const res = await fetch(withAccount("/api/state"));
+    if (res.status === 404 && account !== "main") { account = "main"; return load(true); }
     if (!res.ok) throw new Error();
     const next = await res.json();
     if (JSON.stringify(next) !== JSON.stringify(state)) { state = next; render(); }
   } catch { if (!state) document.getElementById("view").replaceChildren(el("div", { className: "empty", textContent: "Could not load data from the bot." })); }
 }
+if (params.get("connected")) { toast("TikTok account connected"); history.replaceState(null, "", "/"); try { localStorage.setItem("tt_account", account); } catch {} }
 load(true); setInterval(load, 10000);
 </script>
 </body>

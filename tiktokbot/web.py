@@ -1,7 +1,8 @@
-"""Local dashboard: watch clips, edit captions, approve or reject, see the schedule and results."""
+"""Local dashboard: connect TikTok accounts, manage streamers, review clips, see the schedule and results."""
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import logging
 import re
@@ -10,16 +11,32 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
+from .accounts import MAIN, Accounts
 from .pipeline import Bot
 
 log = logging.getLogger(__name__)
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 PAGE = (Path(__file__).parent / "dashboard.html").read_bytes()
+_HARVEST_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
 
 
-def _state(bot: Bot) -> dict:
+def _lock(account_id: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _HARVEST_LOCKS.setdefault(account_id, threading.Lock())
+
+
+def _sources(bot: Bot) -> list[dict]:
+    mine = {s["url"] for s in bot.dashboard_sources()}
+    return [{
+        "url": s["url"], "match": s.get("match") or [], "hashtags": s.get("hashtags") or [],
+        "live": bool(s.get("record_seconds")), "removable": s["url"] in mine,
+    } for s in bot.all_sources()]
+
+
+def _state(accounts: Accounts, account_id: str, bot: Bot) -> dict:
     clips = []
     for r in bot.db.clips():
         clips.append({
@@ -29,17 +46,61 @@ def _state(bot: Bot) -> dict:
             "posted_at": r["posted_at"], "has_file": Path(r["path"]).exists(),
         })
     return {
+        "app_ready": accounts.app_ready(),
+        "redirect_uri": accounts.app_settings()["redirect_uri"],
+        "accounts": accounts.list(),
+        "account": account_id,
         "clips": clips,
         "next_posts": [t.isoformat() for t in bot.upcoming_slots(3)],
+        "post_times": bot.cfg["schedule"]["post_times"],
         "timezone": bot.cfg["schedule"]["timezone"],
         "mode": bot.tiktok.mode,
         "connected": bot.tiktok.token_path.exists(),
         "require_approval": bool(bot.cfg["review"]["require_approval"]),
+        "sources": _sources(bot),
+        "harvesting": _lock(account_id).locked(),
     }
+
+
+def _harvest_in_background(accounts: Accounts, account_id: str) -> bool:
+    lock = _lock(account_id)
+    if not lock.acquire(blocking=False):
+        return False
+
+    def work():
+        try:
+            accounts.bot(account_id).harvest(force=True)
+        except Exception:
+            log.exception("harvest from dashboard failed")
+        finally:
+            lock.release()
+
+    threading.Thread(target=work, daemon=True, name=f"harvest-{account_id}").start()
+    return True
+
+
+def _words(value) -> list[str]:
+    if isinstance(value, list):
+        value = ",".join(map(str, value))
+    return [w.strip() for w in str(value or "").split(",") if w.strip()][:20]
+
+
+def _message_page(title: str, text: str, link: str = "/") -> bytes:
+    return (
+        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width, initial-scale=1'>"
+        "<title>TikTokBot</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:520px;margin:15vh auto;"
+        "padding:0 16px;background:#f5f4f1;color:#1c1b19}@media(prefers-color-scheme:dark){body{background:#131312;"
+        "color:#ecebe7}a{color:#2dd4bf}}a{color:#0f766e}</style>"
+        f"<h1>{html.escape(title)}</h1><p>{html.escape(text)}</p><p><a href='{html.escape(link)}'>Back to the dashboard</a></p>"
+    ).encode()
 
 
 def make_handler(cfg: dict):
     token = str(cfg["web"].get("token") or "")
+    accounts = Accounts(cfg)
+
+    def callback_path() -> str:
+        return urlparse(accounts.app_settings()["redirect_uri"] or "").path or "/callback"
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "TikTokBot"
@@ -47,7 +108,6 @@ def make_handler(cfg: dict):
         def log_message(self, fmt, *args):
             log.debug("web: " + fmt, *args)
 
-        # -- helpers
         def _send(self, status: int, body: bytes, ctype: str, headers: dict | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", ctype)
@@ -63,6 +123,9 @@ def make_handler(cfg: dict):
         def _json(self, data, status: int = 200) -> None:
             self._send(status, json.dumps(data).encode(), "application/json")
 
+        def _redirect(self, location: str) -> None:
+            self._send(302, b"", "text/plain", {"Location": location})
+
         def _authorized(self, query: dict) -> bool:
             if not token:
                 return True
@@ -70,27 +133,56 @@ def make_handler(cfg: dict):
             given = (query.get("token") or [cookie.value if cookie else ""])[0]
             return hmac.compare_digest(given.encode(), token.encode())
 
-        # -- routes
+        @staticmethod
+        def _account(query: dict, body: dict | None = None) -> str:
+            return str((body or {}).get("account") or (query.get("account") or [MAIN])[0])
+
         def do_GET(self):
             url = urlparse(self.path)
             query = parse_qs(url.query)
+            if url.path == callback_path():
+                return self._callback(query)
             if not self._authorized(query):
                 return self._send(401, b"Open this page with ?token=<web.token from config.yaml>", "text/plain")
             if url.path == "/":
                 headers = {}
-                if token and "token" in query:  # keep the token out of later URLs
-                    headers["Set-Cookie"] = f"tt_token={token}; HttpOnly; SameSite=Strict; Path=/"
+                if token and "token" in query:
+                    headers["Set-Cookie"] = f"tt_token={token}; HttpOnly; SameSite=Lax; Path=/"
                 return self._send(200, PAGE, "text/html; charset=utf-8", headers)
+            if url.path == "/connect":
+                if not accounts.app_ready():
+                    return self._redirect("/")
+                try:
+                    return self._redirect(accounts.start_connect())
+                except Exception as exc:
+                    return self._send(500, _message_page("Could not start the TikTok login", str(exc)), "text/html; charset=utf-8")
+            account_id = self._account(query)
+            try:
+                bot = accounts.bot(account_id)
+            except KeyError:
+                return self._json({"error": "unknown account"}, 404)
             if url.path == "/api/state":
-                return self._json(_state(Bot(cfg)))
+                return self._json(_state(accounts, account_id, bot))
             if m := re.fullmatch(r"/media/(\d+)", url.path):
-                return self._media(int(m.group(1)))
+                return self._media(bot, int(m.group(1)))
             self._send(404, b"not found", "text/plain")
 
         do_HEAD = do_GET
 
-        def _media(self, clip_id: int) -> None:
-            row = Bot(cfg).db.get(clip_id)
+        def _callback(self, query: dict) -> None:
+            if query.get("error"):
+                reason = (query.get("error_description") or query.get("error"))[0]
+                return self._send(400, _message_page("TikTok login was cancelled", reason), "text/html; charset=utf-8")
+            try:
+                info = accounts.finish_connect((query.get("state") or [""])[0], (query.get("code") or [""])[0])
+            except Exception as exc:
+                log.warning("TikTok login failed: %s", exc)
+                return self._send(400, _message_page("TikTok login failed", str(exc)), "text/html; charset=utf-8")
+            log.info("TikTok account connected: %s", info["name"])
+            self._redirect(f"/?account={quote(info['id'])}&connected=1")
+
+        def _media(self, bot: Bot, clip_id: int) -> None:
+            row = bot.db.get(clip_id)
             path = Path(row["path"]) if row else None
             if not path or not path.is_file():
                 return self._send(404, b"clip file not available", "text/plain")
@@ -122,14 +214,13 @@ def make_handler(cfg: dict):
                         self.wfile.write(chunk)
                         left -= len(chunk)
                 except (BrokenPipeError, ConnectionResetError):
-                    pass  # the browser stopped loading the video
+                    pass
 
         def do_POST(self):
             url = urlparse(self.path)
-            if not self._authorized(parse_qs(url.query)):
+            query = parse_qs(url.query)
+            if not self._authorized(query):
                 return self._json({"error": "unauthorized"}, 401)
-            # Browsers cannot send JSON cross-site without a preflight, and the Origin
-            # must be this server: blocks other websites from driving the dashboard.
             origin = self.headers.get("Origin")
             if (self.headers.get("Content-Type", "").split(";")[0] != "application/json"
                     or (origin and urlparse(origin).netloc != self.headers.get("Host"))):
@@ -142,7 +233,49 @@ def make_handler(cfg: dict):
             if not isinstance(body, dict):
                 return self._json({"error": "bad request"}, 400)
 
-            bot = Bot(cfg)
+            if url.path == "/api/app":
+                key, secret = str(body.get("client_key", "")), str(body.get("client_secret", ""))
+                redirect = str(body.get("redirect_uri", "")).strip()
+                if redirect and urlparse(redirect).scheme not in ("http", "https"):
+                    return self._json({"error": "the redirect URI must start with http:// or https://"}, 400)
+                accounts.save_app(key, secret, redirect)
+                if not accounts.app_ready():
+                    return self._json({"error": "client key, client secret and redirect URI are all needed"}, 400)
+                return self._json({"ok": True})
+
+            account_id = self._account(query, body)
+            try:
+                bot = accounts.bot(account_id)
+            except KeyError:
+                return self._json({"error": "unknown account"}, 404)
+
+            if url.path == "/api/accounts/disconnect":
+                accounts.disconnect(account_id)
+                return self._json({"ok": True})
+            if url.path == "/api/settings":
+                try:
+                    accounts.save_settings(
+                        account_id,
+                        _words(body["post_times"]) if "post_times" in body else None,
+                        body.get("require_approval") if "require_approval" in body else None,
+                    )
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
+                return self._json({"ok": True})
+            if url.path == "/api/sources":
+                try:
+                    src = bot.add_source(str(body.get("url", "")), _words(body.get("match")), _words(body.get("hashtags")))
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
+                return self._json({"ok": True, "source": src})
+            if url.path == "/api/sources/remove":
+                if not bot.remove_source(str(body.get("url", ""))):
+                    return self._json({"error": "only links added in the dashboard can be removed here"}, 404)
+                return self._json({"ok": True})
+            if url.path == "/api/harvest":
+                if not _harvest_in_background(accounts, account_id):
+                    return self._json({"error": "already checking for new clips"}, 409)
+                return self._json({"ok": True})
             if url.path == "/api/approve-all":
                 rows = bot.db.clips("pending")
                 for row in rows:

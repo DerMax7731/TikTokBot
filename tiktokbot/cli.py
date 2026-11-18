@@ -9,6 +9,7 @@ import sys
 from . import ai, transcript, vision
 from .config import ConfigError, load_config
 from . import web
+from .accounts import Accounts, Runner
 from .pipeline import Bot
 from .tiktok_api import TikTokError
 
@@ -17,7 +18,7 @@ def _doctor(bot: Bot) -> int:
     cfg = bot.cfg
     checks = [
         ("ffmpeg installed", bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), "install ffmpeg"),
-        ("sources configured", bool(cfg["sources"]), "add at least one entry under sources"),
+        ("sources configured", bool(bot.all_sources()), "add a source in the dashboard or under sources"),
         ("TikTok app credentials", bool(cfg["tiktok"]["client_key"] and cfg["tiktok"]["client_secret"]),
          "set tiktok.client_key / client_secret"),
         ("TikTok account connected", bot.tiktok.token_path.exists(), "run `tiktokbot auth`"),
@@ -88,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     try:
-        bot = Bot(load_config(args.config))
+        cfg = load_config(args.config)
+        cfg["tiktok"].update(Accounts(cfg).app_settings())
+        bot = Bot(cfg)
         if args.cmd == "auth":
             if not args.code:
                 url = bot.tiktok.authorize_url()
@@ -104,11 +107,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if bot.post_next(dry_run=args.dry_run)[0] is not None else 1
         elif args.cmd == "run":
             if args.once:
-                bot.tick(dry_run=args.dry_run)
+                Runner(bot.cfg).step(dry_run=args.dry_run)
             else:
                 if args.web:
                     web.serve_in_background(bot.cfg)
-                bot.run_forever(dry_run=args.dry_run)
+                Runner(bot.cfg).run_forever(dry_run=args.dry_run)
         elif args.cmd == "web":
             server = web.make_server(bot.cfg, args.host, args.port)
             print("dashboard on http://%s:%s (Ctrl+C to stop)" % server.server_address[:2])

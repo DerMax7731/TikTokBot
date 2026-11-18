@@ -1,6 +1,8 @@
 """Harvest (fetch -> score -> pick -> render clips) and the posting schedule."""
 from __future__ import annotations
 
+import json
+from urllib.parse import urlparse
 import logging
 import time
 from datetime import datetime, timedelta
@@ -70,14 +72,62 @@ class Bot:
                  created, self.db.count("queued"), self.db.count("pending"))
         return created
 
+    @property
+    def _sources_file(self) -> Path:
+        return self.data / "sources.json"
+
+    def dashboard_sources(self) -> list[dict]:
+        try:
+            items = json.loads(self._sources_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [s for s in items if isinstance(s, dict) and s.get("url")]
+
+    def all_sources(self) -> list[dict]:
+        seen, out = set(), []
+        for src in list(self.cfg["sources"]) + self.dashboard_sources():
+            if src["url"] not in seen:
+                seen.add(src["url"])
+                out.append(src)
+        return out
+
+    def add_source(self, url: str, match: list[str] | None = None, hashtags: list[str] | None = None) -> dict:
+        url = url.strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc or len(url) > 500:
+            raise ValueError("enter a full link starting with https://")
+        if any(s["url"] == url for s in self.all_sources()):
+            raise ValueError("this link is already in the list")
+        src: dict = {"url": url, "latest": 2}
+        host = parsed.netloc.lower()
+        if "twitch.tv" in host or "kick.com" in host or url.rstrip("/").endswith("/live"):
+            src["record_seconds"] = 1200
+        if match:
+            src["match"] = [m for m in (k.strip().lower() for k in match) if m]
+        if hashtags:
+            src["hashtags"] = [h for h in (t.strip().lstrip("#") for t in hashtags) if h]
+        items = self.dashboard_sources() + [src]
+        self.data.mkdir(parents=True, exist_ok=True)
+        self._sources_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        return src
+
+    def remove_source(self, url: str) -> bool:
+        items = self.dashboard_sources()
+        keep = [s for s in items if s["url"] != url]
+        if len(keep) == len(items):
+            return False
+        self._sources_file.write_text(json.dumps(keep, indent=2), encoding="utf-8")
+        return True
+
     def ranked_sources(self) -> list[dict]:
         """Configured sources, those whose clips earned the most views first.
         Sources without data yet rank as average, so new ones still get their turn."""
+        sources_now = self.all_sources()
         perf = self.db.source_performance()
         if not perf:
-            return list(self.cfg["sources"])
+            return sources_now
         mean = sum(perf.values()) / len(perf)
-        return sorted(self.cfg["sources"], key=lambda s: -perf.get(s["url"], mean))
+        return sorted(sources_now, key=lambda s: -perf.get(s["url"], mean))
 
     def _words(self, media, a: float, b: float) -> list:
         """Words spoken between a and b, timed in source seconds."""

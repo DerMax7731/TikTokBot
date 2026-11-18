@@ -471,3 +471,168 @@ def test_dashboard_refuses_public_bind_without_token(tmp_path):
     from tiktokbot import web
     with pytest.raises(ValueError):
         web.make_server(load_config(write_cfg(tmp_path)), "0.0.0.0", 0)
+
+
+def test_source_keyword_match():
+    from tiktokbot.sources import matches
+    assert matches({"title": "Whatever"}, [])
+    assert matches({"title": "Erster Tag in GTA 6!"}, ["gta 6", "gta vi"])
+    assert matches({"title": "x", "description": "we play GTA VI"}, ["gta 6", "gta vi"])
+    assert not matches({"title": "Minecraft Hardcore"}, ["gta 6", "gta vi"])
+
+
+def test_dashboard_sources_add_remove(tmp_path):
+    bot = Bot(load_config(write_cfg(tmp_path)))
+    before = len(bot.all_sources())
+    src = bot.add_source("https://www.twitch.tv/somestreamer", ["GTA 6", " "], ["#gta6", "fyp"])
+    assert src["record_seconds"] == 1200 and src["match"] == ["gta 6"] and src["hashtags"] == ["gta6", "fyp"]
+    assert len(Bot(bot.cfg).all_sources()) == before + 1
+    with pytest.raises(ValueError):
+        bot.add_source("https://www.twitch.tv/somestreamer")
+    with pytest.raises(ValueError):
+        bot.add_source("not a link")
+    assert "record_seconds" not in bot.add_source("https://www.youtube.com/@someone/videos")
+    assert bot.remove_source("https://www.twitch.tv/somestreamer")
+    assert not bot.remove_source("https://www.twitch.tv/somestreamer")
+    assert len(bot.all_sources()) == before + 1
+
+
+def test_dashboard_source_api(tmp_path):
+    import json as _json
+    import threading as _threading
+    import urllib.request
+    from tiktokbot import web
+    cfg = load_config(write_cfg(tmp_path))
+    server = web.make_server(cfg, "127.0.0.1", 0)
+    _threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(path, body):
+        req = urllib.request.Request(base + path, data=_json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        assert call("/api/sources", {"url": "https://kick.com/someone", "match": "gta 6, gta vi", "hashtags": "gta6"}) == 200
+        assert call("/api/sources", {"url": "nope"}) == 400
+        state = _json.loads(urllib.request.urlopen(base + "/api/state").read())
+        added = [s for s in state["sources"] if s["url"] == "https://kick.com/someone"][0]
+        assert added["live"] and added["removable"] and added["match"] == ["gta 6", "gta vi"]
+        assert call("/api/sources/remove", {"url": "https://kick.com/someone"}) == 200
+    finally:
+        server.shutdown()
+
+
+def _fake_tiktok(monkeypatch, open_id, name):
+    import json as _json
+    from tiktokbot import tiktok_api
+
+    def exchange(self, code):
+        assert code == "good-code"
+        tok = {"access_token": "a", "refresh_token": "r", "open_id": open_id, "expires_at": time.time() + 3600}
+        self.token_path.parent.mkdir(parents=True, exist_ok=True)
+        self.token_path.write_text(_json.dumps(tok))
+        return tok
+
+    monkeypatch.setattr(tiktok_api.TikTokClient, "exchange_code", exchange)
+    monkeypatch.setattr(tiktok_api.TikTokClient, "user_info", lambda self: {"open_id": open_id, "display_name": name})
+
+
+def _state_from(url):
+    from urllib.parse import parse_qs, urlparse
+    return parse_qs(urlparse(url).query)["state"][0]
+
+
+def test_accounts_connect_and_separate(tmp_path, monkeypatch):
+    from tiktokbot.accounts import MAIN, Accounts
+    cfg = load_config(write_cfg(tmp_path, tiktok={"client_key": "", "client_secret": "", "redirect_uri": ""}))
+    accounts = Accounts(cfg)
+    assert not accounts.app_ready()
+    accounts.save_app("key", "secret", "http://localhost:8080/callback")
+    assert accounts.app_ready()
+
+    _fake_tiktok(monkeypatch, "user-one", "One")
+    first = accounts.finish_connect(_state_from(accounts.start_connect()), "good-code")
+    assert first["id"] == MAIN and first["name"] == "One" and first["connected"]
+
+    _fake_tiktok(monkeypatch, "user-two", "Two")
+    second = accounts.finish_connect(_state_from(accounts.start_connect()), "good-code")
+    assert second["id"] == "user-two" and second["connected"]
+    assert [a["id"] for a in accounts.list()] == [MAIN, "user-two"]
+
+    _fake_tiktok(monkeypatch, "user-one", "One again")
+    again = accounts.finish_connect(_state_from(accounts.start_connect()), "good-code")
+    assert again["id"] == MAIN and len(accounts.list()) == 2
+
+    two = accounts.bot("user-two")
+    assert two.all_sources() == []
+    two.add_source("https://www.twitch.tv/someone")
+    assert all(s["url"] != "https://www.twitch.tv/someone" for s in accounts.bot(MAIN).all_sources())
+    assert two.db.conn is not accounts.bot(MAIN).db.conn
+
+    accounts.save_settings("user-two", ["18:30", "08:00"], True)
+    cfg2 = accounts.cfg_for("user-two")
+    assert cfg2["schedule"]["post_times"] == ["08:00", "18:30"] and cfg2["review"]["require_approval"]
+    with pytest.raises(ValueError):
+        accounts.save_settings("user-two", ["9 Uhr"])
+    with pytest.raises(ValueError):
+        accounts.finish_connect("expired-state", "good-code")
+
+    accounts.disconnect("user-two")
+    assert not accounts.describe("user-two")["connected"]
+
+
+def test_dashboard_connect_flow(tmp_path, monkeypatch):
+    import json as _json
+    import threading as _threading
+    import urllib.request
+    from tiktokbot import web
+    cfg = load_config(write_cfg(tmp_path, tiktok={"client_key": "", "client_secret": "", "redirect_uri": ""}))
+    server = web.make_server(cfg, "127.0.0.1", 0)
+    _threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+
+    def get(path):
+        try:
+            r = opener.open(base + path)
+            return r.status, r.headers, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, e.read()
+
+    def post(path, body):
+        req = urllib.request.Request(base + path, data=_json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    try:
+        state = _json.loads(get("/api/state")[2])
+        assert state["app_ready"] is False
+        assert post("/api/app", {"client_key": "k", "client_secret": "s", "redirect_uri": "http://localhost:8080/callback"}) == 200
+        status, headers, _ = get("/connect")
+        assert status == 302 and headers["Location"].startswith("https://www.tiktok.com/v2/auth/authorize/")
+        _fake_tiktok(monkeypatch, "abc", "Max")
+        status, headers, _ = get(f"/callback?code=good-code&state={_state_from(headers['Location'])}")
+        assert status == 302 and "account=main" in headers["Location"]
+        state = _json.loads(get("/api/state")[2])
+        assert state["accounts"][0]["name"] == "Max" and state["connected"]
+        assert get("/callback?code=good-code&state=nope")[0] == 400
+        assert get("/api/state?account=ghost")[0] == 404
+        assert post("/api/settings", {"post_times": "10:00, 22:00", "require_approval": False}) == 200
+        state = _json.loads(get("/api/state")[2])
+        assert state["post_times"] == ["10:00", "22:00"] and state["require_approval"] is False
+    finally:
+        server.shutdown()

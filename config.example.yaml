@@ -72,6 +72,8 @@ sources:
   - url: "https://www.youtube.com/@YourChannel/videos"
     latest: 2
     hashtags: ["fyp", "clips"]
+    # match: ["gta 6", "gta vi"]   # only videos/streams whose title or description contains one of these
+    # scan: 30                      # with match: how many recent videos are checked
   # A single video.
   # - url: "https://www.youtube.com/watch?v=XXXXXXXXXXX"
   # A live stream (Twitch, YouTube Live, Kick ...): records this many seconds when live.
